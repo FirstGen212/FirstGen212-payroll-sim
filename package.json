@@ -4,8 +4,17 @@
   "private": true,
   "description": "Payroll and employer-portal simulator for customer success training. All data is fictitious.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^9.3.0",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
   }
 }

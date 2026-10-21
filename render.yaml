@@ -1,0 +1,21 @@
+# Render Blueprint: in Render, choose New > Blueprint and pick this repo.
+services:
+  - type: web
+    name: payroll-sim
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build --if-present
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: payroll-sim-db
+          property: connectionString
+      - key: NODE_VERSION
+        value: 22
+
+databases:
+  - name: payroll-sim-db
+    plan: basic-256mb
+    databaseName: payroll_sim
