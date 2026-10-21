@@ -1,0 +1,11 @@
+{
+  "name": "payroll-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Payroll and employer-portal simulator for customer success training. All data is fictitious.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
