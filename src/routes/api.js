@@ -1,23 +1,31 @@
 // JSON API. Every route below /api/w/:ws is scoped to one sandbox workspace.
 import express from 'express';
 import { query } from '../db/index.js';
-import { createWorkspace, resetWorkspace, listWorkspaces } from '../services/workspaces.js';
+import { createWorkspace, resetWorkspace, listWorkspaces, canAccessWorkspace } from '../services/workspaces.js';
+import { loadUser, requireUser } from '../services/auth.js';
+import { training } from './training.js';
 import { createRun, setPaycheckInputs, calculateRun, finalizeRun, checkRegister } from '../services/payroll.js';
 import { fakeEmployee } from '../services/census.js';
 
 export const api = express.Router();
 
-const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-api.get('/workspaces', wrap(async (req, res) => res.json(await listWorkspaces())));
-api.post('/workspaces', wrap(async (req, res) => res.status(201).json(await createWorkspace({ name: req.body.name || 'Sandbox' }))));
+api.use(loadUser);
+api.use(training);
+
+api.get('/workspaces', requireUser, wrap(async (req, res) => res.json(await listWorkspaces(req.user))));
+api.post('/workspaces', requireUser, wrap(async (req, res) => {
+  res.status(201).json(await createWorkspace({ name: req.body.name || `${req.user.name} · Practice`, userId: req.user.id }));
+}));
 
 const ws = express.Router({ mergeParams: true });
-api.use('/w/:ws', (req, res, next) => {
+api.use('/w/:ws', requireUser, wrap(async (req, res, next) => {
   req.ws = Number(req.params.ws);
   if (!Number.isInteger(req.ws)) return res.status(400).json({ error: 'Bad workspace id' });
+  if (!(await canAccessWorkspace(req.user, req.ws))) return res.status(404).json({ error: 'Sandbox not found' });
   next();
-}, ws);
+}), ws);
 
 ws.post('/reset', wrap(async (req, res) => {
   await resetWorkspace(req.ws);
@@ -144,6 +152,6 @@ ws.get('/paychecks/:id', wrap(async (req, res) => {
 }));
 
 api.use((err, req, res, next) => {
-  console.error(err);
-  res.status(400).json({ error: err.message });
+  if (!err.status) console.error(err);
+  res.status(err.status || 400).json({ error: err.code === '23505' ? 'That already exists' : err.message });
 });

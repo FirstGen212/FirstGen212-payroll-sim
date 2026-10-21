@@ -120,3 +120,38 @@ CREATE TABLE IF NOT EXISTS paychecks (
 
 CREATE INDEX IF NOT EXISTS employees_workspace ON employees (workspace_id);
 CREATE INDEX IF NOT EXISTS paychecks_employee ON paychecks (employee_id);
+
+-- Training: classes, assignments and graded attempts.
+CREATE TABLE IF NOT EXISTS classes (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS class_members (
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (class_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS assignments (
+  id SERIAL PRIMARY KEY,
+  scenario_key TEXT NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  class_id INTEGER REFERENCES classes(id) ON DELETE SET NULL,
+  assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  due_date DATE,
+  status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'in_progress', 'submitted')),
+  best_score NUMERIC(5, 1),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS assignment_id INTEGER REFERENCES assignments(id) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id SERIAL PRIMARY KEY,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  score NUMERIC(5, 1) NOT NULL,
+  results JSONB NOT NULL,
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

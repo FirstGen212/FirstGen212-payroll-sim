@@ -1,6 +1,6 @@
 // Payroll simulator front end: a small hash-routed app over the JSON API.
 
-const state = { ws: null, company: null, companies: [] };
+const state = { ws: null, company: null, companies: [], user: null };
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
 
@@ -18,6 +18,7 @@ async function api(path, options = {}) {
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   if (res.status === 204) return null;
+  if (res.status === 401 && !path.startsWith('/auth')) { showAuth(); throw new Error('Please sign in'); }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -35,10 +36,12 @@ function toast(msg) {
 
 async function loadWorkspaces() {
   let list = await api('/workspaces');
-  if (!list.length) list = [await api('/workspaces', { method: 'POST', body: { name: 'My sandbox' } })];
+  if (!list.length) list = [await api('/workspaces', { method: 'POST', body: {} })];
   const saved = Number(localStorageGet('ws'));
   state.ws = list.some((w) => w.id === saved) ? saved : list[0].id;
-  $('#ws-select').innerHTML = list.map((w) => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
+  const trainer = state.user.role === 'trainer';
+  $('#ws-select').innerHTML = list
+    .map((w) => `<option value="${w.id}">${esc(w.name)}${trainer && w.owner && w.user_id !== state.user.id ? ` (${esc(w.owner)})` : ''}</option>`).join('');
   $('#ws-select').value = state.ws;
   await loadCompanies();
 }
@@ -87,7 +90,10 @@ const routes = {
   reports: renderReports,
   paycheck: renderPaycheck,
   import: renderImport,
+  assignments: renderAssignments,
+  admin: renderAdmin,
 };
+const NO_COMPANY_NEEDED = new Set(['assignments', 'admin']);
 
 async function route() {
   const [name = 'dashboard', ...params] = location.hash.replace(/^#\//, '').split('/');
@@ -95,7 +101,8 @@ async function route() {
     const target = a.getAttribute('href').slice(2);
     a.classList.toggle('active', target === name || (name === 'employee' && target === 'employees') || (name === 'run' && target === 'payroll') || (name === 'paycheck' && target === 'reports'));
   });
-  if (!state.company) { view.innerHTML = '<p>No company in this sandbox.</p>'; return; }
+  if (!state.user) return;
+  if (!state.company && !NO_COMPANY_NEEDED.has(name)) { view.innerHTML = '<p>No company in this sandbox.</p>'; return; }
   view.innerHTML = '<p class="muted">Loading…</p>';
   try {
     await (routes[name] || renderDashboard)(...params);
@@ -617,4 +624,181 @@ function parseCsv(text) {
   return body.map((r) => Object.fromEntries(keys.map((k, i) => [k, (r[i] ?? '').trim()])));
 }
 
-loadWorkspaces().then(route).catch((err) => { view.innerHTML = `<p>Could not load: ${esc(err.message)}</p>`; });
+// ---------- training ----------
+
+async function openWorkspace(id, hash = '#/dashboard') {
+  localStorageSet('ws', id);
+  await loadWorkspaces();
+  location.hash = hash;
+  route();
+}
+
+async function renderAssignments() {
+  const [assignments, scenarios] = await Promise.all([api('/training/assignments?mine=1'), api('/training/scenarios')]);
+  const byKey = Object.fromEntries(scenarios.map((s) => [s.key, s]));
+  view.innerHTML = `<h1>My Assignments</h1>
+    ${assignments.length ? '' : '<p class="muted">Nothing assigned yet. Your trainer will assign scenarios here. You can practice freely in your Practice sandbox.</p>'}
+    ${assignments.map((a) => {
+      const sc = byKey[a.scenario_key];
+      const last = a.last_attempt;
+      return `<div class="panel" data-id="${a.id}">
+        <h2 style="margin-top:0">${esc(sc?.title || a.scenario_key)} <span class="badge">${esc(sc?.skill || '')}</span>
+          ${a.best_score != null ? `<span class="badge ${Number(a.best_score) === 100 ? 'finalized' : 'mock'}">Best ${a.best_score}%</span>` : ''}</h2>
+        <p class="muted">${a.due_date ? `Due ${a.due_date} · ` : ''}${a.attempt_count} attempt${a.attempt_count === 1 ? '' : 's'} · ${a.status.replace('_', ' ')}</p>
+        <div class="instructions">${sc?.instructions || ''}</div>
+        <div class="actions">
+          <button class="start">${a.workspace_id ? 'Open sandbox' : 'Start'}</button>
+          ${a.workspace_id ? '<button class="secondary submit">Submit for grading</button>' : ''}
+        </div>
+        ${last ? `<div><span class="score">${last.score}%</span> <span class="muted">last attempt</span>
+          <ul>${last.results.map((r) => `<li class="${r.passed ? 'check-pass' : 'check-fail'}">${r.passed ? '✓' : '✗'} ${esc(r.label)} (${r.points} pts)</li>`).join('')}</ul></div>` : ''}
+      </div>`;
+    }).join('')}`;
+  view.querySelectorAll('.start').forEach((btn) => btn.addEventListener('click', async () => {
+    const id = btn.closest('[data-id]').dataset.id;
+    const ws = await api(`/training/assignments/${id}/start`, { method: 'POST' });
+    toast('Sandbox ready. The instructions stay on My Assignments.');
+    openWorkspace(ws.id);
+  }));
+  view.querySelectorAll('.submit').forEach((btn) => btn.addEventListener('click', async () => {
+    const id = btn.closest('[data-id]').dataset.id;
+    const attempt = await api(`/training/assignments/${id}/submit`, { method: 'POST' });
+    toast(`Scored ${attempt.score}%`);
+    renderAssignments();
+  }));
+}
+
+async function renderAdmin(tab = 'gradebook') {
+  const tabs = ['gradebook', 'assign', 'people', 'classes']
+    .map((t) => `<a href="#/admin/${t}" class="${tab === t ? 'active' : ''}">${t[0].toUpperCase()}${t.slice(1)}</a>`).join('');
+  const [users, classes, scenarios] = await Promise.all([api('/training/users'), api('/training/classes'), api('/training/scenarios')]);
+  const trainees = users.filter((u) => u.role === 'trainee');
+  let body = '';
+
+  if (tab === 'gradebook') {
+    const assignments = await api('/training/assignments');
+    body = `<div class="actions"><label>Class <select id="gb-class"><option value="">All trainees</option>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label></div>
+      <div class="table-wrap"><table id="gb"><tr><th>Trainee</th>${scenarios.map((s) => `<th title="${esc(s.title)}">${esc(s.skill)}</th>`).join('')}<th class="num">Average</th></tr>
+      ${trainees.map((u) => {
+        const mine = assignments.filter((a) => a.user_id === u.id);
+        const scores = mine.filter((a) => a.best_score != null).map((a) => Number(a.best_score));
+        return `<tr data-classes="${u.classes.map((c) => c.id).join(',')}"><td>${esc(u.name)}</td>${scenarios.map((s) => {
+          const a = mine.find((x) => x.scenario_key === s.key);
+          if (!a) return '<td class="muted">—</td>';
+          return `<td>${a.best_score != null ? `<strong>${a.best_score}%</strong>` : `<span class="muted">${a.status.replace('_', ' ')}</span>`}
+            ${a.workspace_id ? ` <a href="#" data-ws="${a.workspace_id}" class="peek">view</a>` : ''}</td>`;
+        }).join('')}<td class="num">${scores.length ? `${(scores.reduce((x, y) => x + y, 0) / scores.length).toFixed(1)}%` : '—'}</td></tr>`;
+      }).join('')}</table></div>
+      <p class="muted">"view" opens the trainee's sandbox so you can review their work.</p>`;
+  } else if (tab === 'assign') {
+    body = `<form id="assign-form" class="panel">
+        <div class="form-grid">
+          <label>Scenario<select name="scenarioKey">${scenarios.map((s) => `<option value="${s.key}">${esc(s.title)} (${esc(s.skill)})</option>`).join('')}</select></label>
+          <label>Whole class<select name="classId"><option value="">—</option>${classes.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+          <label>Due date<input name="dueDate" type="date"></label>
+        </div>
+        <h2>Or pick trainees</h2>
+        <div class="form-grid">${trainees.map((u) => `<label style="flex-direction:row;align-items:center;gap:6px;color:var(--ink)"><input type="checkbox" name="user" value="${u.id}"> ${esc(u.name)}</label>`).join('') || '<span class="muted">Add trainees under People first.</span>'}</div>
+        <div class="actions"><button type="submit">Assign</button></div>
+      </form>
+      <h2>Scenarios</h2>${scenarios.map((s) => `<div class="panel"><strong>${esc(s.title)}</strong> <span class="badge">${esc(s.skill)}</span> <span class="muted">${s.checkCount} checks · ${s.points} pts</span><div class="instructions">${s.instructions}</div></div>`).join('')}`;
+  } else if (tab === 'people') {
+    body = `<form id="person-form" class="panel"><div class="form-grid">
+        <label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label>
+        <label>Temporary password<input name="password" required minlength="8"></label>
+        <label>Role<select name="role"><option value="trainee">Trainee</option><option value="trainer">Trainer</option></select></label>
+        <div style="align-self:end"><button type="submit">Add person</button></div></div></form>
+      <div class="table-wrap"><table><tr><th>Name</th><th>Email</th><th>Role</th><th>Classes</th><th></th></tr>
+        ${users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.role}</td><td>${u.classes.map((c) => esc(c.name)).join(', ')}</td>
+          <td><button class="secondary pw" data-id="${u.id}">Set password</button></td></tr>`).join('')}</table></div>`;
+  } else {
+    body = `<form id="class-form" class="panel"><div class="form-grid"><label>New class name<input name="name" required placeholder="e.g. November CS cohort"></label>
+        <div style="align-self:end"><button type="submit">Create class</button></div></div></form>
+      ${classes.map((c) => `<div class="panel" data-class="${c.id}"><h2 style="margin-top:0">${esc(c.name)}</h2>
+        <div class="form-grid">${trainees.map((u) => `<label style="flex-direction:row;align-items:center;gap:6px;color:var(--ink)"><input type="checkbox" value="${u.id}" ${c.member_ids.includes(u.id) ? 'checked' : ''}> ${esc(u.name)}</label>`).join('')}</div>
+        <div class="actions"><button class="secondary save-members">Save members</button></div></div>`).join('')}`;
+  }
+
+  view.innerHTML = `<h1>Training Admin</h1><div class="tabs">${tabs}</div>${body}`;
+
+  $('#gb-class')?.addEventListener('change', (ev) => {
+    view.querySelectorAll('#gb tr[data-classes]').forEach((tr) => {
+      tr.style.display = !ev.target.value || tr.dataset.classes.split(',').includes(ev.target.value) ? '' : 'none';
+    });
+  });
+  view.querySelectorAll('.peek').forEach((a) => a.addEventListener('click', (ev) => { ev.preventDefault(); openWorkspace(Number(a.dataset.ws)); }));
+  $('#assign-form')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const created = await api('/training/assignments', { method: 'POST', body: {
+      scenarioKey: f.get('scenarioKey'), classId: f.get('classId') ? Number(f.get('classId')) : null,
+      dueDate: f.get('dueDate') || null, userIds: f.getAll('user').map(Number),
+    } });
+    toast(`Assigned to ${created.length} trainee${created.length === 1 ? '' : 's'}`);
+    ev.target.reset();
+  });
+  $('#person-form')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    await api('/training/users', { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) });
+    toast('Person added. Share their email and temporary password with them.');
+    renderAdmin('people');
+  });
+  view.querySelectorAll('.pw').forEach((btn) => btn.addEventListener('click', async () => {
+    const password = prompt('New password (8+ characters)');
+    if (!password) return;
+    await api(`/training/users/${btn.dataset.id}/password`, { method: 'POST', body: { password } });
+    toast('Password updated');
+  }));
+  $('#class-form')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    await api('/training/classes', { method: 'POST', body: { name: new FormData(ev.target).get('name') } });
+    renderAdmin('classes');
+  });
+  view.querySelectorAll('.save-members').forEach((btn) => btn.addEventListener('click', async () => {
+    const panel = btn.closest('[data-class]');
+    const userIds = [...panel.querySelectorAll('input[type=checkbox]:checked')].map((i) => Number(i.value));
+    await api(`/training/classes/${panel.dataset.class}/members`, { method: 'PUT', body: { userIds } });
+    toast('Class updated');
+  }));
+}
+
+// ---------- sign-in ----------
+
+function showAuth(needsSetup = false) {
+  state.user = null;
+  document.body.classList.add('signed-out');
+  const screen = $('#auth-screen');
+  screen.hidden = false;
+  screen.innerHTML = needsSetup
+    ? `<h1>Set up the simulator</h1><p class="muted">Create the first trainer account. You can add trainees after this.</p>
+       <form id="auth-form"><label>Your name<input name="name" required></label><label>Email<input name="email" type="email" required></label>
+       <label>Password (8+ characters)<input name="password" type="password" minlength="8" required></label><button type="submit">Create trainer account</button></form>`
+    : `<h1>Sign in</h1><form id="auth-form"><label>Email<input name="email" type="email" required autocomplete="username"></label>
+       <label>Password<input name="password" type="password" required autocomplete="current-password"></label><button type="submit">Sign in</button></form>`;
+  $('#auth-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      const { user } = await api(needsSetup ? '/auth/setup' : '/auth/login', { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) });
+      await start(user);
+    } catch (err) { toast(err.message); }
+  });
+}
+
+async function start(user) {
+  state.user = user;
+  document.body.classList.remove('signed-out');
+  document.body.classList.toggle('trainer', user.role === 'trainer');
+  $('#auth-screen').hidden = true;
+  $('#who').textContent = `${user.name} (${user.role})`;
+  await loadWorkspaces();
+  route();
+}
+
+$('#logout-btn').addEventListener('click', async () => {
+  await api('/auth/logout', { method: 'POST' });
+  showAuth();
+});
+
+api('/auth/status')
+  .then(({ user, needsSetup }) => (user ? start(user) : showAuth(needsSetup)))
+  .catch((err) => { view.innerHTML = `<p>Could not load: ${esc(err.message)}</p>`; });

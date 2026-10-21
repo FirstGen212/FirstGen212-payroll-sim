@@ -1,8 +1,18 @@
 // Trainee sandboxes: create, seed and reset.
 import { query, transaction } from '../db/index.js';
+import { faker } from '@faker-js/faker';
+import { scenarioByKey } from './scenarios.js';
 import { DEFAULT_EARNING_CODES, DEFAULT_DEDUCTION_CODES, fakeCompany, fakeEmployee, fakeElections } from './census.js';
 
-export async function createCompany(client, workspaceId, company, { employees = 25 } = {}) {
+/** Generates fake people up front (no awaits), so a seeded faker gives the same result every time. */
+export function fakePeople(state, count = 25) {
+  return Array.from({ length: count }, (_, index) => {
+    const emp = fakeEmployee({ state, index });
+    return { emp, elections: fakeElections(emp) };
+  });
+}
+
+export async function createCompany(client, workspaceId, company, people = fakePeople(company.state)) {
   const { rows: [row] } = await client.query(
     `INSERT INTO companies (workspace_id, name, fein, state, pay_frequency, payroll_provider, address)
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
@@ -22,8 +32,7 @@ export async function createCompany(client, workspaceId, company, { employees = 
     );
     deductionIds[d.code] = code.id;
   }
-  for (let i = 0; i < employees; i++) {
-    const emp = fakeEmployee({ state: company.state, index: i });
+  for (const { emp, elections } of people) {
     const { rows: [inserted] } = await client.query(
       `INSERT INTO employees (workspace_id, company_id, employee_number, first_name, last_name, email, phone, ssn,
          birth_date, hire_date, address, employment_type, pay_type, pay_rate, standard_hours, work_state, w4, state_w4)
@@ -32,7 +41,7 @@ export async function createCompany(client, workspaceId, company, { employees = 
         emp.birth_date, emp.hire_date, emp.address, emp.employment_type, emp.pay_type, emp.pay_rate,
         emp.standard_hours, emp.work_state, emp.w4, emp.state_w4],
     );
-    for (const election of fakeElections(emp)) {
+    for (const election of elections) {
       await client.query(
         'INSERT INTO employee_deductions (workspace_id, employee_id, deduction_code_id, amount, percent) VALUES ($1, $2, $3, $4, $5)',
         [workspaceId, inserted.id, deductionIds[election.code], election.amount ?? null, election.percent ?? null],
@@ -42,23 +51,26 @@ export async function createCompany(client, workspaceId, company, { employees = 
   return row;
 }
 
-async function seed(client, workspaceId) {
+async function seed(client, workspaceId, scenarioKey) {
+  const scenario = scenarioByKey(scenarioKey);
+  // Scenario sandboxes get the same fake people every time, so instructions can name them.
+  faker.seed(scenario?.seed ?? Math.floor(Math.random() * 1e9));
   // One client company per training state, each on a different pay cycle.
-  const companies = [
-    fakeCompany({ state: 'NY', payFrequency: 'weekly' }),
-    fakeCompany({ state: 'NJ', payFrequency: 'biweekly' }),
-    fakeCompany({ state: 'CA', payFrequency: 'semimonthly' }),
-  ];
-  for (const company of companies) await createCompany(client, workspaceId, company);
+  const plans = [['NY', 'weekly'], ['NJ', 'biweekly'], ['CA', 'semimonthly']].map(([state, payFrequency]) => ({
+    company: fakeCompany({ state, payFrequency }),
+    people: fakePeople(state),
+  }));
+  for (const { company, people } of plans) await createCompany(client, workspaceId, company, people);
+  if (scenario?.setup) await scenario.setup({ db: client, ws: workspaceId });
 }
 
-export async function createWorkspace({ name, userId = null, scenario = 'default' }) {
+export async function createWorkspace({ name, userId = null, scenario = null, assignmentId = null }) {
   return transaction(async (client) => {
     const { rows: [ws] } = await client.query(
-      'INSERT INTO workspaces (name, user_id, scenario) VALUES ($1, $2, $3) RETURNING *',
-      [name, userId, scenario],
+      'INSERT INTO workspaces (name, user_id, scenario, assignment_id) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, userId, scenario, assignmentId],
     );
-    await seed(client, ws.id);
+    await seed(client, ws.id, scenario);
     return ws;
   });
 }
@@ -66,12 +78,22 @@ export async function createWorkspace({ name, userId = null, scenario = 'default
 /** Wipes a sandbox back to a freshly seeded state. */
 export async function resetWorkspace(workspaceId) {
   return transaction(async (client) => {
+    const { rows: [ws] } = await client.query('SELECT scenario FROM workspaces WHERE id = $1', [workspaceId]);
     await client.query('DELETE FROM companies WHERE workspace_id = $1', [workspaceId]);
-    await seed(client, workspaceId);
+    await seed(client, workspaceId, ws?.scenario);
   });
 }
 
-export async function listWorkspaces() {
-  const { rows } = await query('SELECT * FROM workspaces ORDER BY id');
+export async function listWorkspaces(user) {
+  const { rows } = user.role === 'trainer'
+    ? await query('SELECT w.*, u.name AS owner FROM workspaces w LEFT JOIN users u ON u.id = w.user_id ORDER BY w.id')
+    : await query('SELECT w.*, u.name AS owner FROM workspaces w LEFT JOIN users u ON u.id = w.user_id WHERE w.user_id = $1 ORDER BY w.id', [user.id]);
   return rows;
+}
+
+/** Trainers may open any sandbox; trainees only their own. */
+export async function canAccessWorkspace(user, workspaceId) {
+  if (user.role === 'trainer') return true;
+  const { rows } = await query('SELECT 1 FROM workspaces WHERE id = $1 AND user_id = $2', [workspaceId, user.id]);
+  return rows.length > 0;
 }

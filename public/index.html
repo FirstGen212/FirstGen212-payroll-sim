@@ -14,8 +14,11 @@
       <label>Sandbox <select id="ws-select"></select></label>
       <label>Company <select id="company-select"></select></label>
       <button id="reset-btn" class="ghost">Reset sandbox</button>
+      <span id="who"></span>
+      <button id="logout-btn" class="ghost">Sign out</button>
     </div>
   </header>
+  <div id="auth-screen" hidden></div>
   <div class="layout">
     <nav class="sidenav">
       <a href="#/dashboard">Dashboard</a>
@@ -24,6 +27,8 @@
       <a href="#/payroll">Run Payroll</a>
       <a href="#/reports">Reports</a>
       <a href="#/import">Import / Census</a>
+      <a href="#/assignments">My Assignments</a>
+      <a href="#/admin" class="trainer-only">Training Admin</a>
     </nav>
     <main id="view"></main>
   </div>

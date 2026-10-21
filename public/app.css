@@ -80,3 +80,15 @@ input.small { width: 80px; }
   main { padding: 16px; }
   .stub .grid2 { grid-template-columns: 1fr; }
 }
+
+/* Sign-in and training */
+#auth-screen { max-width: 380px; margin: 60px auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; }
+#auth-screen form { display: flex; flex-direction: column; gap: 12px; }
+#auth-screen label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+body.signed-out .topbar .context, body.signed-out .layout { display: none; }
+body:not(.trainer) .trainer-only { display: none; }
+#who { font-size: 12px; opacity: .9; }
+.instructions { background: #f8fafc; border-left: 3px solid var(--brand); padding: 4px 16px; margin: 10px 0; }
+.check-pass { color: var(--good); }
+.check-fail { color: var(--bad); }
+.score { font-size: 18px; font-weight: 700; }
