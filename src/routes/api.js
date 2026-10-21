@@ -4,6 +4,7 @@ import { query } from '../db/index.js';
 import { createWorkspace, resetWorkspace, listWorkspaces, canAccessWorkspace } from '../services/workspaces.js';
 import { loadUser, requireUser } from '../services/auth.js';
 import { training } from './training.js';
+import { portalRoutes } from './portal.js';
 import { createRun, setPaycheckInputs, calculateRun, finalizeRun, checkRegister } from '../services/payroll.js';
 import { fakeEmployee } from '../services/census.js';
 
@@ -26,6 +27,8 @@ api.use('/w/:ws', requireUser, wrap(async (req, res, next) => {
   if (!(await canAccessWorkspace(req.user, req.ws))) return res.status(404).json({ error: 'Sandbox not found' });
   next();
 }), ws);
+
+ws.use('/portal', portalRoutes);
 
 ws.post('/reset', wrap(async (req, res) => {
   await resetWorkspace(req.ws);
