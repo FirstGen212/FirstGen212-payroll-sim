@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { calcPaycheck } from '../src/engine/payroll.js';
-import { perCheck, programDeductions, compareWithProgram, rewardMonthly } from '../src/engine/program.js';
+import { perCheck, programLines, compareWithProgram, rewardMonthly } from '../src/engine/program.js';
 
 const nyEmployee = { workState: 'NY', payFrequency: 'biweekly', w4: { filingStatus: 'single' }, stateW4: { filingStatus: 'single' } };
 const tax = (check, code) => check.taxes.find((t) => t.code === code).amount;
@@ -73,22 +73,39 @@ test('Program plan amount per check by pay cycle', () => {
   assert.equal(perCheck(1293, 'monthly'), 1293);
 });
 
-test('Program codes switch for part-time employees', () => {
-  const lines = programDeductions({ payFrequency: 'weekly', partTime: true, benefitsPayment: 250, products: ['MEC'] });
-  assert.deepEqual(lines.map((l) => l.code), ['FGPT', 'BPTpt', 'RWPpt']);
+test('Program codes and amounts switch for part-time employees', () => {
+  const { deductions } = programLines({ payFrequency: 'monthly', partTime: true, products: ['MEC'] });
+  assert.deepEqual(deductions.map((l) => [l.code, l.amount]), [['FGPT', 780], ['BPTpt', -780], ['RWPpt', 55]]);
+});
+
+test('BPT can come back as a non-taxable reimbursement instead', () => {
+  const { earnings, deductions } = programLines({ payFrequency: 'biweekly', bptMode: 'reimbursement' });
+  assert.deepEqual(earnings, [{ code: 'BPT', label: 'Benefits Payment', amount: 596.77, taxable: false }]);
+  assert.deepEqual(deductions.map((l) => l.code), ['FGH']);
 });
 
 test('RWP is the elected products spread per check', () => {
   assert.equal(rewardMonthly(['VIRTUAL', 'DENTAL', 'VISION']), 199);
-  const rwp = programDeductions({ payFrequency: 'biweekly', products: ['VIRTUAL', 'MEC'] }).find((l) => l.code === 'RWP');
+  const rwp = programLines({ payFrequency: 'biweekly', products: ['VIRTUAL', 'MEC'] }).deductions.find((l) => l.code === 'RWP');
   assert.equal(rwp.amount, perCheck(204, 'biweekly'));
+  assert.equal(rwp.kind, 'section125');
+});
+
+test('NY $2,000 biweekly employee with MEC gains net pay under the program', () => {
+  const result = compareWithProgram({
+    employee: nyEmployee,
+    earnings: regular(2000),
+    program: programLines({ payFrequency: 'biweekly', products: ['MEC'] }),
+  });
+  assert.ok(result.ok, result.issues.join(','));
+  assert.ok(result.netChange > 0);
 });
 
 test('Launch check flags a net pay decrease', () => {
   const result = compareWithProgram({
     employee: nyEmployee,
-    earnings: regular(2000),
-    program: programDeductions({ payFrequency: 'biweekly' }),
+    earnings: regular(400),
+    program: programLines({ payFrequency: 'biweekly', products: ['VIRTUAL', 'MEC', 'DENTAL', 'VISION'] }),
   });
   assert.ok(result.issues.includes('NET_PAY_DECREASE'));
 });

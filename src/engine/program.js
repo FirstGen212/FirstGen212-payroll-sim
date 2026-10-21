@@ -4,7 +4,7 @@ import { calcPaycheck } from './payroll.js';
 
 // Monthly amounts in dollars.
 export const PROGRAM_PRICING = {
-  planMonthly: 1293,
+  planMonthly: { fullTime: 1293, partTime: 780 },
   products: { VIRTUAL: 149, MEC: 55, DENTAL: 30, VISION: 20 },
 };
 
@@ -33,23 +33,38 @@ export function rewardMonthly(products = []) {
 }
 
 /**
- * Builds the program deduction lines for one employee.
- * FGH is the plan amount, RWP is the elected products, both spread per check.
- * benefitsPayment is a per-check dollar amount passed in until its pricing rule is confirmed.
+ * Builds the program lines for one employee.
+ *
+ * FGH: pre-tax Section 125 plan deduction ($1,293 FT / $780 PT a month).
+ * BPT: pays the same amount back, either as a negative deduction or as a
+ *      non-taxable reimbursement earning, depending on the payroll system.
+ * RWP: the elected products, deducted the same way as FGH.
+ * Monthly amounts are spread per check by pay cycle.
  */
-export function programDeductions({ payFrequency, partTime = false, products = [], benefitsPayment = 0, planMonthly = PROGRAM_PRICING.planMonthly }) {
+export function programLines({ payFrequency, partTime = false, products = [], bptMode = 'negativeDeduction' }) {
   const codes = partTime ? PROGRAM_CODES.partTime : PROGRAM_CODES.fullTime;
-  const lines = [{ code: codes.plan, label: 'First Gen Health Plan', amount: perCheck(planMonthly, payFrequency), kind: 'section125' }];
-  if (benefitsPayment) lines.push({ code: codes.benefitsPayment, label: 'Benefits Payment', amount: -Math.abs(benefitsPayment), kind: 'posttax' });
+  const plan = perCheck(PROGRAM_PRICING.planMonthly[partTime ? 'partTime' : 'fullTime'], payFrequency);
+  const deductions = [{ code: codes.plan, label: 'First Gen Health Plan', amount: plan, kind: 'section125' }];
+  const earnings = [];
+  if (bptMode === 'reimbursement') {
+    earnings.push({ code: codes.benefitsPayment, label: 'Benefits Payment', amount: plan, taxable: false });
+  } else {
+    deductions.push({ code: codes.benefitsPayment, label: 'Benefits Payment', amount: -plan, kind: 'posttax' });
+  }
   const reward = rewardMonthly(products);
-  if (reward) lines.push({ code: codes.reward, label: 'Reward Plan', amount: perCheck(reward, payFrequency), kind: 'posttax' });
-  return lines;
+  if (reward) deductions.push({ code: codes.reward, label: 'Reward Plan', amount: perCheck(reward, payFrequency), kind: 'section125' });
+  return { earnings, deductions };
 }
 
 /** Runs a paycheck with and without the program and flags anything that would block launch. */
 export function compareWithProgram({ employee, earnings, deductions = [], ytd, program }) {
   const before = calcPaycheck({ employee, earnings, deductions, ytd });
-  const after = calcPaycheck({ employee, earnings, deductions: [...deductions, ...program], ytd });
+  const after = calcPaycheck({
+    employee,
+    earnings: [...earnings, ...program.earnings],
+    deductions: [...deductions, ...program.deductions],
+    ytd,
+  });
   const issues = [...after.warnings];
   if (after.netPay < before.netPay) issues.push('NET_PAY_DECREASE');
   if (after.taxes.some((t) => t.amount < 0)) issues.push('NEGATIVE_TAX');
