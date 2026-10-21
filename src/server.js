@@ -8,6 +8,7 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
 app.use('/api', api);
 app.use(express.static(new URL('../public', import.meta.url).pathname));
+app.get('/portal', (req, res) => res.sendFile(new URL('../public/portal.html', import.meta.url).pathname));
 app.get('/healthz', (req, res) => res.send('ok'));
 
 const port = process.env.PORT || 3000;

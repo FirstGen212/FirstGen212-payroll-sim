@@ -5,7 +5,8 @@ import { runCalculator, calculatorRow } from '../engine/calculator.js';
 import { diagnoseEmployee, SEVERITY_PRESETS } from '../engine/mockDiagnosis.js';
 import { perCheck, PROGRAM_PRICING, PROGRAM_CODES, IMPLEMENTATION_WEEK, rewardMonthly } from '../engine/program.js';
 import { PAY_PERIODS } from '../engine/taxTables2026.js';
-import { registerLine } from './portalSeed.js';
+import { registerLine, simulateExtraction } from './portalSeed.js';
+import { registerFromCsv } from '../engine/registerFormat.js';
 
 export const ONBOARDING_STATUSES = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation', 'Awaiting CSM Verification',
   'Proposal Ready', 'Eligibility Review', 'Engagement Letter', 'AOP Pending', 'Census', 'Completed'];
@@ -161,6 +162,25 @@ export async function updateClient(ws, id, body) {
 }
 
 // ---------- onboarding queue (payroll review) and CSM queue ----------
+
+const DOC_STATUSES = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation'];
+
+/** The client uploads a payroll register; the reader extracts it into the Onboarding Queue. */
+export async function uploadPayrollDocs(ws, id, { csv, fileName = 'Payroll Register.csv' }) {
+  const source = registerFromCsv(csv);
+  if (source.length < 3) throw new PortalError('The register needs at least 3 employees.');
+  return transaction(async (db) => {
+    const c = await getCompany(db, ws, id);
+    if (!DOC_STATUSES.includes(c.onboarding_status)) throw new PortalError(`${c.name} is past the payroll documents stage.`);
+    // A new upload replaces any extraction still waiting for review.
+    await db.query("DELETE FROM payroll_jobs WHERE company_id = $1 AND queue = 'review'", [c.id]);
+    const { rows: [job] } = await db.query('INSERT INTO payroll_jobs (workspace_id, company_id, source, rows) VALUES ($1, $2, $3, $4) RETURNING id',
+      [ws, c.id, JSON.stringify(source), JSON.stringify(simulateExtraction(source))]);
+    if (c.onboarding_status === 'Welcome') await db.query("UPDATE companies SET onboarding_status = 'Payroll Docs' WHERE id = $1", [c.id]);
+    await log(db, ws, c.id, 'document.upload', { file: fileName, employees: source.length }, 'Client');
+    return { job: job.id, employees: source.length };
+  });
+}
 
 export async function listJobs(ws, queue) {
   const { rows } = await query(

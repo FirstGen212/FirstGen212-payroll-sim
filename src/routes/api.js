@@ -5,7 +5,8 @@ import { createWorkspace, resetWorkspace, listWorkspaces, canAccessWorkspace } f
 import { loadUser, requireUser } from '../services/auth.js';
 import { training } from './training.js';
 import { portalRoutes } from './portal.js';
-import { createRun, setPaycheckInputs, calculateRun, finalizeRun, checkRegister } from '../services/payroll.js';
+import { createRun, setPaycheckInputs, calculateRun, finalizeRun, checkRegister, registerExport } from '../services/payroll.js';
+import { registerToCsv } from '../engine/registerFormat.js';
 import { fakeEmployee } from '../services/census.js';
 
 export const api = express.Router();
@@ -149,6 +150,11 @@ ws.post('/runs/:id/finalize', wrap(async (req, res) => res.json(await finalizeRu
 ws.delete('/runs/:id', wrap(async (req, res) => {
   const { rowCount } = await query("DELETE FROM payroll_runs WHERE id = $1 AND workspace_id = $2 AND status <> 'finalized'", [req.params.id, req.ws]);
   res.status(rowCount ? 204 : 409).end();
+}));
+ws.get('/runs/:id/register.csv', wrap(async (req, res) => {
+  const { run, lines } = await registerExport({ workspaceId: req.ws, runId: Number(req.params.id) });
+  const name = `${run.company_name.replace(/[^A-Za-z0-9]+/g, '_')}_payroll_register_${run.check_date}.csv`;
+  res.type('text/csv').attachment(name).send(registerToCsv(lines));
 }));
 ws.get('/runs/:id/register', wrap(async (req, res) => res.json(await checkRegister({ workspaceId: req.ws, runId: Number(req.params.id) }))));
 ws.put('/paychecks/:id/inputs', wrap(async (req, res) => res.json(await setPaycheckInputs({ workspaceId: req.ws, paycheckId: Number(req.params.id), inputs: req.body }))));

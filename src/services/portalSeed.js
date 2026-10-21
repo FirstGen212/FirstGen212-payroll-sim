@@ -60,6 +60,26 @@ const EXTRACTION_ERRORS = [
   { field: 'avg_hrs', apply: (r) => ({ ...r, avg_hrs: null }), note: 'Hours not found' },
 ];
 
+/**
+ * "Extracts" a payroll register the way the document reader would: mostly right, with
+ * planted mistakes on flagged cells and two correct cells flagged anyway.
+ */
+export function simulateExtraction(source) {
+  const rows = source.map((r) => ({ ...r, verified: false, flags: [] }));
+  const errors = EXTRACTION_ERRORS.slice(0, Math.max(0, rows.length - 2));
+  const errorTargets = faker.helpers.arrayElements(rows.map((_, i) => i), errors.length);
+  errorTargets.forEach((rowIndex, i) => {
+    const err = errors[i];
+    const note = typeof err.note === 'function' ? err.note(rows[rowIndex]) : err.note;
+    rows[rowIndex] = { ...err.apply(rows[rowIndex]), verified: false, flags: [{ field: err.field, note }] };
+  });
+  // Two correct values flagged anyway: low confidence doesn't always mean wrong.
+  for (const i of faker.helpers.arrayElements(rows.map((_, idx) => idx).filter((idx) => !errorTargets.includes(idx)), 2)) {
+    rows[i].flags.push({ field: 'fed_tax', note: 'Low confidence: amount' });
+  }
+  return rows;
+}
+
 export async function seedPortal(client, ws) {
   const { rows: companies } = await client.query('SELECT * FROM companies WHERE workspace_id = $1 ORDER BY id', [ws]);
   const byState = Object.fromEntries(companies.map((c) => [c.state, c]));
@@ -134,17 +154,7 @@ export async function seedPortal(client, ws) {
        contact = $3, milestones = '{}' WHERE id = $1`,
     [ca.id, faker.string.numeric(5), { name: faker.person.fullName(), title: 'Controller', email: 'payroll@example.com', phone: faker.phone.number({ style: 'national' }) }]);
   const source = (await employeesOf(ca)).map((e) => registerLine(e, ca.pay_frequency));
-  const rows = source.map((r) => ({ ...r, verified: false, flags: [] }));
-  const errorTargets = faker.helpers.arrayElements(rows.map((_, i) => i), EXTRACTION_ERRORS.length);
-  errorTargets.forEach((rowIndex, i) => {
-    const err = EXTRACTION_ERRORS[i];
-    const note = typeof err.note === 'function' ? err.note(rows[rowIndex]) : err.note;
-    rows[rowIndex] = { ...err.apply(rows[rowIndex]), verified: false, flags: [{ field: err.field, note }] };
-  });
-  // Two correct values flagged anyway: low confidence doesn't always mean wrong.
-  for (const i of faker.helpers.arrayElements(rows.map((_, idx) => idx).filter((idx) => !errorTargets.includes(idx)), 2)) {
-    rows[i].flags.push({ field: 'fed_tax', note: 'Low confidence: amount' });
-  }
+  const rows = simulateExtraction(source);
   await client.query('INSERT INTO payroll_jobs (workspace_id, company_id, source, rows) VALUES ($1, $2, $3, $4)',
     [ws, ca.id, JSON.stringify(source), JSON.stringify(rows)]);
   await client.query(

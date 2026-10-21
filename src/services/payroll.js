@@ -181,3 +181,41 @@ export async function checkRegister({ workspaceId, runId }) {
   );
   return rows;
 }
+
+/** One run as register-export lines (the file a client sends to First Gen). */
+export async function registerExport({ workspaceId, runId }) {
+  const { rows: [run] } = await query(
+    `SELECT r.*, c.name AS company_name, c.pay_frequency FROM payroll_runs r JOIN companies c ON c.id = r.company_id
+     WHERE r.id = $1 AND r.workspace_id = $2`, [runId, workspaceId]);
+  if (!run) throw Object.assign(new Error('Payroll not found'), { status: 404 });
+  const { rows } = await query(
+    `SELECT p.detail, e.* FROM paychecks p JOIN employees e ON e.id = p.employee_id
+     WHERE p.payroll_run_id = $1 AND p.detail IS NOT NULL ORDER BY e.employee_number`, [runId]);
+  const periods = PAY_PERIODS[run.pay_frequency];
+  const lines = rows.map((e) => {
+    const d = e.detail;
+    const tax = (code) => (d.taxes.find((t) => t.code === code)?.amount || 0) / 100;
+    const hours = d.earnings.reduce((t, l) => t + (Number(l.hours) || 0), 0);
+    return {
+      emp_id: e.employee_number,
+      first_name: e.first_name,
+      last_name: e.last_name,
+      pay_freq: run.pay_frequency,
+      emp_type: e.pay_type === 'salary' ? 'Salary' : 'Hourly',
+      avg_hrs: hours || round2(40 * (52 / periods)),
+      rate: e.pay_type === 'salary' ? null : Number(e.pay_rate),
+      gross: d.grossPay / 100,
+      reimb: d.earnings.filter((l) => l.taxable === false).reduce((t, l) => t + l.amount, 0) / 100,
+      fed_filing: e.w4?.filingStatus,
+      dependents: e.w4?.dependentsCredit ? Math.round(e.w4.dependentsCredit / 2200) : 0,
+      state_filing: e.state_w4?.filingStatus,
+      work_state: e.work_state,
+      fed_tax: tax('FIT'),
+      ss: tax('SS'),
+      medicare: tax('MED'),
+      state_tax: tax(`${e.work_state}_SIT`),
+      net_pay: d.netPay / 100,
+    };
+  });
+  return { run, lines };
+}

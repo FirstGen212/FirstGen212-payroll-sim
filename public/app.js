@@ -3,6 +3,18 @@
 const state = { ws: null, company: null, companies: [], user: null };
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
+// Two apps share this code: the payroll system at / and the employer portal at /portal.
+const APP = document.body.dataset.app || 'payroll';
+const HOME = APP === 'portal' ? 'clients' : 'dashboard';
+const PORTAL_ROUTES = new Set(['clients', 'client', 'queue', 'csm', 'job', 'calculator', 'census', 'upload', 'activity']);
+const SHARED_ROUTES = new Set(['assignments', 'admin']);
+
+/** Opens a page of the other app in its own tab, on the same sandbox (and company, for payroll). */
+function openOtherApp(app, hash, companyId) {
+  if (companyId) localStorageSet(`company-${state.ws}`, companyId);
+  window.open(`${app === 'portal' ? '/portal' : '/'}${hash}`, `payrollsim-${app}`);
+}
+window.openOtherApp = openOtherApp;
 
 const money = (cents) => (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 const dollars = (n) => Number(n).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
@@ -74,7 +86,7 @@ $('#reset-btn').addEventListener('click', async () => {
   await wsApi('/reset', { method: 'POST' });
   await loadCompanies();
   toast('Sandbox reset');
-  location.hash = '#/dashboard';
+  location.hash = `#/${HOME}`;
   route();
 });
 
@@ -106,7 +118,10 @@ const NO_COMPANY_NEEDED = new Set(['assignments', 'admin', 'clients', 'client', 
 const NAV_PARENT = { employee: 'employees', run: 'payroll', paycheck: 'reports', client: 'clients', job: 'queue', calculator: 'csm', upload: 'census' };
 
 async function route() {
-  const [name = 'dashboard', ...params] = location.hash.replace(/^#\//, '').split('/');
+  let [name = HOME, ...params] = location.hash.replace(/^#\//, '').split('/');
+  // Each app only shows its own pages; the other app's links open in its own tab.
+  const belongs = SHARED_ROUTES.has(name) || (APP === 'portal') === PORTAL_ROUTES.has(name);
+  if (!routes[name] || !belongs) { name = HOME; params = []; }
   document.querySelectorAll('.sidenav a').forEach((a) => {
     const target = a.getAttribute('href').slice(2);
     a.classList.toggle('active', target === name || NAV_PARENT[name] === target);
@@ -115,7 +130,7 @@ async function route() {
   if (!state.company && !NO_COMPANY_NEEDED.has(name)) { view.innerHTML = '<p>No company in this sandbox.</p>'; return; }
   view.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    await (routes[name] || renderDashboard)(...params);
+    await routes[name](...params);
   } catch (err) {
     view.innerHTML = `<div class="panel"><strong>Something went wrong.</strong><p>${esc(err.message)}</p></div>`;
   }
@@ -487,7 +502,8 @@ async function renderReports(kind, runId) {
   const picker = `<div class="tabs"><a href="#/reports/register/${selected?.id ?? ''}" class="${kind === 'register' ? 'active' : ''}">Check register</a>
     <a href="#/reports/summary/${selected?.id ?? ''}" class="${kind === 'summary' ? 'active' : ''}">Payroll summary</a></div>
     <div class="actions"><label>Payroll <select id="run-pick">${runs.map((r) => `<option value="${r.id}" ${r.id === selected?.id ? 'selected' : ''}>#${r.id} ${r.run_type} · ${r.check_date} · ${r.status}</option>`).join('')}</select></label>
-    <button class="secondary" onclick="window.print()">Print</button></div>`;
+    <button class="secondary" onclick="window.print()">Print</button>
+    ${selected && kind === 'register' ? `<a class="btn secondary" href="/api/w/${state.ws}/runs/${selected.id}/register.csv">Export register (CSV)</a>` : ''}</div>`;
   if (!selected) { view.innerHTML = '<h1>Reports</h1><p class="muted">Calculate a payroll first.</p>'; return; }
   const register = await wsApi(`/runs/${selected.id}/register`);
   const rows = register.filter((r) => r.detail);
@@ -695,7 +711,12 @@ async function renderClient(id, tab = 'overview') {
   let body = '';
   if (tab === 'overview') {
     const contract = c.contract_products || [];
-    body = `<div class="two-col">
+    const docsStage = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation'].includes(c.onboarding_status);
+    body = `${docsStage ? `<form id="docs" class="panel client-side"><h2 style="margin-top:0">Payroll documents <span class="badge">Client view</span></h2>
+      <p class="muted">Play the client: run a payroll for <strong>${esc(c.name)}</strong> in the payroll system, export its register (Reports → Check register → Export register), then upload it here. The document reader extracts it into the Onboarding Queue for review.</p>
+      <div class="actions"><input type="file" name="file" accept=".csv,text/csv" required><button type="submit">Upload payroll register</button>
+        <a href="#" onclick="openOtherApp('payroll', '#/reports', ${c.id}); return false">Open the payroll system ↗</a></div></form>` : ''}
+    <div class="two-col">
       <form id="settings" class="panel"><h2 style="margin-top:0">Account Settings</h2><div class="form-grid">
         <label>Company name<input name="name" value="${esc(c.name)}"></label>
         <label>Reflect group number<input name="reflect_group" value="${esc(c.reflect_group || '')}" placeholder="e.g. 1G012"></label>
@@ -717,7 +738,7 @@ async function renderClient(id, tab = 'overview') {
     body = `<p class="muted">Census ${d.census.pct}% complete (${d.census.complete} of ${d.census.total} people have every required field).</p>
       <div class="actions"><button id="run-audit">Data audit</button></div><div id="audit-out"></div>
       <div class="table-wrap"><table><tr><th>Employee ID</th><th>Name</th><th>Status</th><th>Type</th><th>Pay cycle</th><th>Gender</th><th>DOB</th><th>SSN</th><th>ZIP</th><th>Location</th><th>Go Live</th><th>Products</th><th>Eligibility</th></tr>
-      ${d.employees.map((e) => `<tr class="clickable" onclick="location.hash='#/employee/${e.id}'"><td>${esc(e.employee_number)}</td><td>${esc(e.last_name)}, ${esc(e.first_name)}</td><td>${esc(e.census_status || '')}</td>
+      ${d.employees.map((e) => `<tr class="clickable" onclick="openOtherApp('payroll', '#/employee/${e.id}', ${c.id})"><td>${esc(e.employee_number)}</td><td>${esc(e.last_name)}, ${esc(e.first_name)}</td><td>${esc(e.census_status || '')}</td>
         <td>${e.employment_type}</td><td>${FREQ_LABEL[c.pay_frequency]}</td><td class="${e.gender ? '' : 'cell-missing'}">${esc(e.gender || '')}</td><td class="${e.birth_date ? '' : 'cell-missing'}">${e.birth_date || ''}</td>
         <td>${maskSsn(e.ssn)}</td><td>${esc(e.address?.zip || '')}</td><td>${esc(e.location_code || '')}</td><td>${e.go_live_date || ''}</td>
         <td>${Object.entries(e.products || {}).map(([k, v]) => `${k} $${v}`).join(', ')}</td><td>${esc(e.eligibility || '')}</td></tr>`).join('')}
@@ -732,7 +753,7 @@ async function renderClient(id, tab = 'overview') {
       ${step(m.education_done, 'Run employee education', m.education_done ? '' : '<button class="secondary ms" data-ms="education_done">Mark education complete</button>')}
       ${step(m.audit_passed, 'Data audit clean (no red issues, census at least 90%), then mark good to launch', m.audit_passed ? '' : '<button class="secondary" id="audit2">Data audit</button> <button class="secondary" id="gtl">Mark good to launch</button>')}
       ${step(m.files_uploaded, 'Build the implementation files and upload them to payroll', `<label>BPT as <select id="bpt-mode"><option value="negativeDeduction">negative deduction</option><option value="reimbursement">reimbursement earning</option></select></label> <button class="secondary" id="files">Build files</button>`)}
-      ${step(false, 'Run a mock payroll in the payroll system and confirm no negative taxes or net pay drops', '<a href="#/payroll">Go to Run Payroll</a>')}
+      ${step(false, 'Run a mock payroll in the payroll system and confirm no negative taxes or net pay drops', `<a href="#" onclick="openOtherApp('payroll', '#/payroll', ${c.id}); return false">Open Run Payroll in the payroll system ↗</a>`)}
     </ol></div><div id="launch-out"></div>`;
   } else if (tab === 'recon') {
     const r = await portalApi(`/clients/${id}/recon`);
@@ -759,6 +780,13 @@ async function renderClient(id, tab = 'overview') {
   const reload = () => renderClient(id, tab);
   $('#advance')?.addEventListener('click', () => act(() => portalApi(`/clients/${id}/advance`, { method: 'POST' }), 'Advanced').then(reload));
   view.querySelectorAll('.ms').forEach((b) => b.addEventListener('click', () => act(() => portalApi(`/clients/${id}/milestones/${b.dataset.ms}`, { method: 'POST' }), 'Done').then(reload)));
+  $('#docs')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const file = ev.target.file.files[0];
+    const r = await act(async () => portalApi(`/clients/${id}/payroll-docs`, { method: 'POST', body: { csv: await file.text(), fileName: file.name } }));
+    toast(`Register uploaded: ${r.employees} employees extracted. Review it in the Onboarding Queue.`);
+    reload();
+  });
   $('#settings')?.addEventListener('submit', (ev) => { ev.preventDefault(); act(() => portalApi(`/clients/${id}`, { method: 'PATCH', body: Object.fromEntries(new FormData(ev.target)) }), 'Saved').then(reload); });
   $('#add-prod')?.addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -964,10 +992,13 @@ async function renderCensusUpload(id) {
 
 // ---------- training ----------
 
-async function openWorkspace(id, hash = '#/dashboard') {
+async function openWorkspace(id, scenarioKey) {
   localStorageSet('ws', id);
   await loadWorkspaces();
-  location.hash = hash;
+  // Portal scenarios start in the portal; payroll ones in the payroll system.
+  const app = scenarioKey?.startsWith('portal-') ? 'portal' : 'payroll';
+  if (app !== APP) { openOtherApp(app, ''); return; }
+  location.hash = `#/${HOME}`;
   route();
 }
 
@@ -996,7 +1027,7 @@ async function renderAssignments() {
     const id = btn.closest('[data-id]').dataset.id;
     const ws = await api(`/training/assignments/${id}/start`, { method: 'POST' });
     toast('Sandbox ready. The instructions stay on My Assignments.');
-    openWorkspace(ws.id);
+    openWorkspace(ws.id, assignments.find((a) => String(a.id) === id)?.scenario_key);
   }));
   view.querySelectorAll('.submit').forEach((btn) => btn.addEventListener('click', async () => {
     const id = btn.closest('[data-id]').dataset.id;

@@ -1,0 +1,14 @@
+/* Employer portal skin: a different tool from the payroll system, on purpose.
+   Placeholder look until it is matched to the real portal. */
+:root { --brand: #0f766e; --bg: #f5f7f7; }
+.topbar { background: #ffffff; color: var(--ink); border-bottom: 1px solid var(--line); }
+.topbar .brand span { color: var(--brand); }
+.topbar .brand small { color: var(--muted); }
+.topbar .ghost { color: var(--ink); border-color: var(--line); }
+.topbar label:has(#company-select) { display: none; }
+.sidenav { background: #10302d; border-right: none; }
+.sidenav a { color: #d6e6e3; }
+.sidenav a:hover { background: rgba(255, 255, 255, 0.06); }
+.sidenav a.active { background: rgba(255, 255, 255, 0.1); color: #ffffff; border-left-color: #5eead4; }
+.sidenav .nav-group { color: #7fa9a3; }
+.client-side { border-left: 4px solid #f59e0b; }

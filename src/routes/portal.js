@@ -12,6 +12,7 @@ portalRoutes.get('/clients/:id', wrap((req) => portal.clientDetail(req.ws, Numbe
 portalRoutes.patch('/clients/:id', wrap((req) => portal.updateClient(req.ws, Number(req.params.id), req.body)));
 portalRoutes.post('/clients/:id/advance', wrap(async (req) => ({ status: await portal.advance(req.ws, Number(req.params.id)) })));
 portalRoutes.post('/clients/:id/milestones/:name', wrap((req) => portal.setMilestone(req.ws, Number(req.params.id), req.params.name)));
+portalRoutes.post('/clients/:id/payroll-docs', wrap((req) => portal.uploadPayrollDocs(req.ws, Number(req.params.id), req.body)));
 portalRoutes.post('/clients/:id/price', wrap((req) => portal.priceRoster(req.ws, Number(req.params.id))));
 portalRoutes.get('/clients/:id/audit', wrap((req) => portal.audit(req.ws, Number(req.params.id))));
 portalRoutes.get('/clients/:id/mock-diagnosis', wrap((req) => portal.mockDiagnosis(req.ws, Number(req.params.id), req.query)));
