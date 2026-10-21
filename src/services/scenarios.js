@@ -1,6 +1,7 @@
 // Training scenarios. Each one seeds its own sandbox (same fake data every time,
 // via a fixed seed) and grades the sandbox when the trainee submits.
 import { perCheck } from '../engine/program.js';
+import { PORTAL_SCENARIOS } from './portalScenarios.js';
 
 const company = async (db, ws, state) =>
   (await db.query('SELECT * FROM companies WHERE workspace_id = $1 AND state = $2', [ws, state])).rows[0];
@@ -220,6 +221,7 @@ export const SCENARIOS = [
       } },
     ],
   },
+  ...PORTAL_SCENARIOS,
 ];
 
 export const scenarioByKey = (key) => SCENARIOS.find((s) => s.key === key);

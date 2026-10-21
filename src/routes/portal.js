@@ -15,6 +15,7 @@ portalRoutes.post('/clients/:id/milestones/:name', wrap((req) => portal.setMiles
 portalRoutes.post('/clients/:id/price', wrap((req) => portal.priceRoster(req.ws, Number(req.params.id))));
 portalRoutes.get('/clients/:id/audit', wrap((req) => portal.audit(req.ws, Number(req.params.id))));
 portalRoutes.get('/clients/:id/mock-diagnosis', wrap((req) => portal.mockDiagnosis(req.ws, Number(req.params.id), req.query)));
+portalRoutes.post('/clients/:id/employees/:num/products', wrap((req) => portal.setEmployeeProducts(req.ws, Number(req.params.id), req.params.num, req.body)));
 portalRoutes.post('/clients/:id/good-to-launch', wrap((req) => portal.markGoodToLaunch(req.ws, Number(req.params.id))));
 portalRoutes.get('/clients/:id/launch-files', wrap((req) => portal.launchFiles(req.ws, Number(req.params.id), req.query)));
 portalRoutes.post('/clients/:id/launch-files/apply', wrap((req) => portal.applyLaunchFiles(req.ws, Number(req.params.id), req.body)));

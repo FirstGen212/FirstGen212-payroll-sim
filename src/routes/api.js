@@ -51,7 +51,8 @@ ws.get('/companies/:cid/employees', wrap(async (req, res) => {
 }));
 
 const EMPLOYEE_FIELDS = ['employee_number', 'first_name', 'last_name', 'email', 'phone', 'ssn', 'birth_date', 'hire_date',
-  'termination_date', 'address', 'status', 'employment_type', 'pay_type', 'pay_rate', 'standard_hours', 'work_state', 'w4', 'state_w4'];
+  'termination_date', 'address', 'status', 'employment_type', 'pay_type', 'pay_rate', 'standard_hours', 'work_state', 'w4', 'state_w4',
+  'gender', 'job_title', 'location_code', 'company_code', 'go_live_date', 'census_status'];
 
 ws.post('/companies/:cid/employees', wrap(async (req, res) => {
   const body = { ...req.body };

@@ -54,7 +54,8 @@ export function registerLine(e, freq) {
 const EXTRACTION_ERRORS = [
   { field: 'gross', apply: (r) => ({ ...r, gross: Number(String(Math.round(r.gross * 100)).replace(/(\d)(\d)(\d\d)$/, '$2$1$3')) / 100 }), note: 'Low confidence: digits' },
   { field: 'fed_filing', apply: (r) => ({ ...r, fed_filing: null }), note: 'Missing federal filing status' },
-  { field: 'state_tax', apply: (r) => ({ ...r, state_tax: 0 }), note: 'State tax not found' },
+  // Someone who really pays no state tax gets a made-up amount instead, so the cell is always wrong.
+  { field: 'state_tax', apply: (r) => ({ ...r, state_tax: r.state_tax ? 0 : round2(r.gross * 0.04) }), note: (r) => (r.state_tax ? 'State tax not found' : 'Low confidence: amount') },
   { field: 'net_pay', apply: (r) => ({ ...r, net_pay: round2(r.net_pay + 100) }), note: 'Low confidence: amount' },
   { field: 'avg_hrs', apply: (r) => ({ ...r, avg_hrs: null }), note: 'Hours not found' },
 ];
@@ -137,7 +138,8 @@ export async function seedPortal(client, ws) {
   const errorTargets = faker.helpers.arrayElements(rows.map((_, i) => i), EXTRACTION_ERRORS.length);
   errorTargets.forEach((rowIndex, i) => {
     const err = EXTRACTION_ERRORS[i];
-    rows[rowIndex] = { ...err.apply(rows[rowIndex]), verified: false, flags: [{ field: err.field, note: err.note }] };
+    const note = typeof err.note === 'function' ? err.note(rows[rowIndex]) : err.note;
+    rows[rowIndex] = { ...err.apply(rows[rowIndex]), verified: false, flags: [{ field: err.field, note }] };
   });
   // Two correct values flagged anyway: low confidence doesn't always mean wrong.
   for (const i of faker.helpers.arrayElements(rows.map((_, idx) => idx).filter((idx) => !errorTargets.includes(idx)), 2)) {

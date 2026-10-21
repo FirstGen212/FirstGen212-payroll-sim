@@ -203,6 +203,14 @@ function employeeForm(e) {
       ${field('Standard weekly hours', 'standard_hours', e.standard_hours ?? 40, 'number')}
       ${select('Work state', 'work_state', e.work_state || state.company.state, { NY: 'New York', NJ: 'New Jersey', CA: 'California' })}
     </div></div>
+    <div class="panel"><h2 style="margin-top:0">Census (employer portal)</h2><div class="form-grid">
+      ${select('Gender', 'gender', e.gender || '', { '': '(missing)', M: 'M', F: 'F' })}
+      ${field('Job title', 'job_title', e.job_title)}
+      ${field('Location code', 'location_code', e.location_code ?? '1000')}
+      ${field('Company code', 'company_code', e.company_code ?? state.company.state)}
+      ${field('Go Live Date', 'go_live_date', e.go_live_date, 'date')}
+      ${select('Census status', 'census_status', e.census_status || 'Active', Object.fromEntries(['Active', 'Active FT', 'Active PT', 'New hire', 'Ineligible', 'Unenrolled', 'Opted out', 'Terminated'].map((v) => [v, v])))}
+    </div></div>
     <div class="panel"><h2 style="margin-top:0">Federal W-4 (2020+)</h2><div class="form-grid">
       ${select('Filing status (Step 1c)', 'w4.filingStatus', w4.filingStatus || 'single', { single: 'Single or Married filing separately', married: 'Married filing jointly', head: 'Head of household' })}
       ${select('Multiple jobs (Step 2)', 'w4.step2Checked', String(!!w4.step2Checked), { false: 'Not checked', true: 'Checked' })}
@@ -775,8 +783,15 @@ async function renderClient(id, tab = 'overview') {
   $('#diag')?.addEventListener('click', async () => {
     const r = await act(() => portalApi(`/clients/${id}/mock-diagnosis`));
     $('#launch-out').innerHTML = `<div class="panel"><h2 style="margin-top:0">Mock Payroll Diagnosis</h2><p class="muted">Worst-case net change per paycheck across 3 pay periods. REMOVE when ≤ $${r.thresholds.remove}; BUFFER when $0 to $${r.thresholds.buffer}.</p>
-      <table><tr><th>Employee</th><th class="num">Worst net change</th><th>Result</th><th>Break-even</th></tr>${r.results.map((x) => `<tr><td>#${esc(x.employeeNumber)} ${esc(x.name)}</td><td class="num">${dollars(x.worstDelta)}</td>
-        <td><span class="badge ${x.status === 'OK' ? 'finalized' : x.status === 'BUFFER' ? 'mock' : 'warn'}">${x.status}</span></td><td>${x.breakEven ? `Drop ${x.breakEven.drop.join(', ')}` : ''}</td></tr>`).join('')}</table></div>`;
+      <table><tr><th>Employee</th><th class="num">Worst net change</th><th>Result</th><th>Break-even</th><th></th></tr>${r.results.map((x) => `<tr><td>#${esc(x.employeeNumber)} ${esc(x.name)}</td><td class="num">${dollars(x.worstDelta)}</td>
+        <td><span class="badge ${x.status === 'OK' ? 'finalized' : x.status === 'BUFFER' ? 'mock' : 'warn'}">${x.status}</span></td><td>${x.breakEven ? `Drop ${x.breakEven.drop.join(', ')}` : ''}</td>
+        <td>${x.breakEven ? `<button class="secondary dx" data-n="${esc(x.employeeNumber)}" data-keep="${x.breakEven.keep.join(',')}">Drop ${x.breakEven.drop.join(', ')}</button>` : ''}
+          ${x.status === 'REMOVE' || (x.status === 'ADJUST' && !x.breakEven) ? `<button class="secondary dx" data-n="${esc(x.employeeNumber)}" data-keep="" data-remove="1">Remove from program</button>` : ''}</td></tr>`).join('')}</table></div>`;
+    $('#launch-out').querySelectorAll('.dx').forEach((b) => b.addEventListener('click', () => {
+      const keep = b.dataset.keep ? b.dataset.keep.split(',') : [];
+      act(() => portalApi(`/clients/${id}/employees/${b.dataset.n}/products`, { method: 'POST', body: { keep, remove: !!b.dataset.remove } }),
+        b.dataset.remove ? 'Removed from the program' : 'Products adjusted').then(() => $('#diag').click());
+    }));
   });
   $('#files')?.addEventListener('click', async () => {
     const mode = $('#bpt-mode').value;

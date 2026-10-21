@@ -224,7 +224,7 @@ export async function pushBackJob(ws, id, reason) {
   });
 }
 
-function jobInputs(job) {
+export function jobInputs(job) {
   return job.rows.map((r) => ({
     name: `${r.first_name} ${r.last_name}`, employeeId: r.emp_id, workState: r.work_state, payFrequency: r.pay_freq,
     grossPerPeriod: Number(r.gross) - Number(r.reimb || 0), avgHoursPerPeriod: r.avg_hrs == null ? null : Number(r.avg_hrs),
@@ -300,33 +300,38 @@ export async function sendCensus(ws, id) {
   return transaction(async (db) => {
     const { rows: [u] } = await db.query('SELECT * FROM census_uploads WHERE id = $1 AND workspace_id = $2', [id, ws]);
     if (!u) throw Object.assign(new Error('Census upload not found'), { status: 404 });
-    let updated = 0, added = 0;
-    for (const r of u.rows) {
-      const { rows: [existing] } = await db.query('SELECT id, w4 FROM employees WHERE company_id = $1 AND employee_number = $2', [u.company_id, r.employee_number]);
-      const ssn = r.ssn && /^\d{9}$/.test(String(r.ssn)) ? String(r.ssn).replace(/(\d{3})(\d{2})(\d{4})/, '$1-$2-$3') : r.ssn;
-      if (existing) {
-        await db.query(
-          `UPDATE employees SET first_name = $2, last_name = $3, birth_date = $4, gender = $5, ssn = $6, email = $7, phone = $8,
-             address = $9, hire_date = $10, w4 = w4 || jsonb_build_object('filingStatus', $11::text) WHERE id = $1`,
-          [existing.id, r.first_name, r.last_name, r.birth_date || null, r.gender || null, ssn, r.email, r.phone, r.address, r.hire_date || null, r.filing_status || existing.w4.filingStatus]);
-        updated++;
-      } else {
-        const { rows: [c] } = await db.query('SELECT state FROM companies WHERE id = $1', [u.company_id]);
-        await db.query(
-          `INSERT INTO employees (workspace_id, company_id, employee_number, first_name, last_name, birth_date, gender, ssn, email, phone, address,
-             hire_date, employment_type, pay_type, pay_rate, standard_hours, work_state, w4, location_code, company_code, census_status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'hourly', $14, $15, $16, $17, '1000', $16, 'Active')`,
-          [ws, u.company_id, r.employee_number, r.first_name, r.last_name, r.birth_date || null, r.gender || null, ssn, r.email, r.phone, r.address,
-            r.hire_date || null, r.employment_type || 'FT', Math.round((Number(r.gross_annual) / 52 / (Number(r.avg_hours) || 40)) * 100) / 100,
-            Number(r.avg_hours) || 40, c.state, { filingStatus: r.filing_status || 'single' }]);
-        added++;
-      }
-    }
-    await db.query("UPDATE census_uploads SET status = 'Sent to CSM' WHERE id = $1", [id]);
-    await db.query("UPDATE companies SET milestones = milestones || '{\"census_reconciled\": true}' WHERE id = $1", [u.company_id]);
-    await log(db, ws, u.company_id, 'Census reconciled', { updated, added });
-    return { updated, added };
+    return sendCensusFor(db, ws, u);
   });
+}
+
+export async function sendCensusFor(db, ws, u) {
+  const id = u.id;
+  let updated = 0, added = 0;
+  for (const r of u.rows) {
+    const { rows: [existing] } = await db.query('SELECT id, w4 FROM employees WHERE company_id = $1 AND employee_number = $2', [u.company_id, r.employee_number]);
+    const ssn = r.ssn && /^\d{9}$/.test(String(r.ssn)) ? String(r.ssn).replace(/(\d{3})(\d{2})(\d{4})/, '$1-$2-$3') : r.ssn;
+    if (existing) {
+      await db.query(
+        `UPDATE employees SET first_name = $2, last_name = $3, birth_date = $4, gender = $5, ssn = $6, email = $7, phone = $8,
+           address = $9, hire_date = $10, w4 = w4 || jsonb_build_object('filingStatus', $11::text) WHERE id = $1`,
+        [existing.id, r.first_name, r.last_name, r.birth_date || null, r.gender || null, ssn, r.email, r.phone, r.address, r.hire_date || null, r.filing_status || existing.w4.filingStatus]);
+      updated++;
+    } else {
+      const { rows: [c] } = await db.query('SELECT state FROM companies WHERE id = $1', [u.company_id]);
+      await db.query(
+        `INSERT INTO employees (workspace_id, company_id, employee_number, first_name, last_name, birth_date, gender, ssn, email, phone, address,
+           hire_date, employment_type, pay_type, pay_rate, standard_hours, work_state, w4, location_code, company_code, census_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'hourly', $14, $15, $16, $17, '1000', $16, 'Active')`,
+        [ws, u.company_id, r.employee_number, r.first_name, r.last_name, r.birth_date || null, r.gender || null, ssn, r.email, r.phone, r.address,
+          r.hire_date || null, r.employment_type || 'FT', Math.round((Number(r.gross_annual) / 52 / (Number(r.avg_hours) || 40)) * 100) / 100,
+          Number(r.avg_hours) || 40, c.state, { filingStatus: r.filing_status || 'single' }]);
+      added++;
+    }
+  }
+  await db.query("UPDATE census_uploads SET status = 'Sent to CSM' WHERE id = $1", [id]);
+  await db.query("UPDATE companies SET milestones = milestones || '{\"census_reconciled\": true}' WHERE id = $1", [u.company_id]);
+  await log(db, ws, u.company_id, 'Census reconciled', { updated, added });
+  return { updated, added };
 }
 
 // ---------- pricing, mock diagnosis, audit ----------
@@ -374,6 +379,22 @@ export async function mockDiagnosis(ws, id, { preset = 'standard', bptMode = 'ne
     results.push({ employeeId: e.id, employeeNumber: e.employee_number, name: `${e.first_name} ${e.last_name}`, ...d });
   }
   return { thresholds, results };
+}
+
+/** After the mock: keep only some products for one person, or take them out of the program. */
+export async function setEmployeeProducts(ws, id, employeeNumber, { keep = [], remove = false }) {
+  return transaction(async (db) => {
+    const c = await getCompany(db, ws, id);
+    const { rows: [e] } = await db.query('SELECT * FROM employees WHERE company_id = $1 AND employee_number = $2', [c.id, employeeNumber]);
+    if (!e) throw new PortalError('Employee not found');
+    const products = remove ? {} : Object.fromEntries(Object.entries(e.products || {}).filter(([code]) => keep.includes(code)));
+    if (!remove && !Object.keys(products).length) throw new PortalError('Keep at least one product, or remove the person from the program.');
+    // Taken out of the program, not out of the company: Ineligible, so no end date is needed.
+    await db.query('UPDATE employees SET products = $2, census_status = $3, eligibility = $4 WHERE id = $1',
+      [e.id, products, remove ? 'Ineligible' : e.census_status, remove ? 'Removed after mock payroll' : e.eligibility]);
+    await log(db, ws, c.id, remove ? 'Removed after mock' : 'Products adjusted after mock', { employeeNumber, products }, 'CS', e.id);
+    return { products };
+  });
 }
 
 export async function audit(ws, id) {
@@ -485,17 +506,22 @@ export async function openReconMonth(ws, id, month) {
   return transaction(async (db) => {
     const c = await getCompany(db, ws, id);
     if (c.onboarding_status !== 'Completed') throw new PortalError('Monthly recon is for live clients.');
-    const employees = (await employeesOf(db, c.id)).filter((e) => !['Terminated', 'Unenrolled', 'Opted out'].includes(e.census_status));
-    // This month's payroll: one person left, one got a raise, and one new hire appeared.
-    const payroll = employees.map((e) => registerLine(e, c.pay_frequency));
-    const leaverIdx = employees.findIndex((e) => /^Active/.test(e.census_status || ''));
-    const leaver = payroll.splice(leaverIdx, 1)[0];
-    const raised = payroll.find((p) => p.emp_type === 'Hourly');
-    if (raised) { raised.gross = Math.round(raised.gross * 1.18 * 100) / 100; raised.rate = Math.round(raised.rate * 1.18 * 100) / 100; }
-    const nextNumber = String(Math.max(...employees.map((e) => Number(e.employee_number) || 0)) + 1);
-    payroll.push({ ...payroll[0], emp_id: nextNumber, first_name: 'Jordan', last_name: 'Newhire', gross: 1080, rate: 27, avg_hrs: 40, fed_filing: 'single', dependents: 0 });
-    await log(db, ws, c.id, 'Recon month opened', { month, payroll, expected: { leaver: leaver.emp_id, raised: raised?.emp_id, newHire: nextNumber } });
+    await openReconMonthFor(db, ws, c, month);
   });
+}
+
+/** Writes a simulated payroll month for a live client. Also used by training scenarios. */
+export async function openReconMonthFor(db, ws, c, month) {
+  const employees = (await employeesOf(db, c.id)).filter((e) => !['Terminated', 'Unenrolled', 'Opted out'].includes(e.census_status));
+  // This month's payroll: one person left, one got a raise, and one new hire appeared.
+  const payroll = employees.map((e) => registerLine(e, c.pay_frequency));
+  const leaverIdx = employees.findIndex((e) => /^Active/.test(e.census_status || ''));
+  const leaver = payroll.splice(leaverIdx, 1)[0];
+  const raised = payroll.find((p) => p.emp_type === 'Hourly');
+  if (raised) { raised.gross = Math.round(raised.gross * 1.18 * 100) / 100; raised.rate = Math.round(raised.rate * 1.18 * 100) / 100; }
+  const nextNumber = String(Math.max(...employees.map((e) => Number(e.employee_number) || 0)) + 1);
+  payroll.push({ ...payroll[0], emp_id: nextNumber, first_name: 'Jordan', last_name: 'Newhire', gross: 1080, rate: 27, avg_hrs: 40, fed_filing: 'single', dependents: 0 });
+  await log(db, ws, c.id, 'Recon month opened', { month, payroll, expected: { leaver: leaver.emp_id, raised: raised?.emp_id, newHire: nextNumber } });
 }
 
 export async function reconAction(ws, id, { action, employeeNumber, date }) {
