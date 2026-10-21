@@ -84,6 +84,11 @@ test('BPT can come back as a non-taxable reimbursement instead', () => {
   assert.deepEqual(deductions.map((l) => l.code), ['FGH']);
 });
 
+test('Part-time virtual is $74 and client price maps override defaults', () => {
+  assert.equal(rewardMonthly(['VIRTUAL'], true), 74);
+  assert.equal(rewardMonthly({ VIRTUAL: 149, MEC: 65 }), 214);
+});
+
 test('RWP is the elected products spread per check', () => {
   assert.equal(rewardMonthly(['VIRTUAL', 'DENTAL', 'VISION']), 199);
   const rwp = programLines({ payFrequency: 'biweekly', products: ['VIRTUAL', 'MEC'] }).deductions.find((l) => l.code === 'RWP');

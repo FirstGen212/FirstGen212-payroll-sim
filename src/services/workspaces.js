@@ -1,10 +1,11 @@
 // Trainee sandboxes: create, seed and reset.
 import { query, transaction } from '../db/index.js';
-import { faker } from '@faker-js/faker';
+import { withSeed } from './fake.js';
+import { seedPortal } from './portalSeed.js';
 import { scenarioByKey } from './scenarios.js';
 import { DEFAULT_EARNING_CODES, DEFAULT_DEDUCTION_CODES, fakeCompany, fakeEmployee, fakeElections } from './census.js';
 
-/** Generates fake people up front (no awaits), so a seeded faker gives the same result every time. */
+/** Generates a company's fake people. */
 export function fakePeople(state, count = 25) {
   return Array.from({ length: count }, (_, index) => {
     const emp = fakeEmployee({ state, index });
@@ -35,11 +36,13 @@ export async function createCompany(client, workspaceId, company, people = fakeP
   for (const { emp, elections } of people) {
     const { rows: [inserted] } = await client.query(
       `INSERT INTO employees (workspace_id, company_id, employee_number, first_name, last_name, email, phone, ssn,
-         birth_date, hire_date, address, employment_type, pay_type, pay_rate, standard_hours, work_state, w4, state_w4)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
+         birth_date, hire_date, address, employment_type, pay_type, pay_rate, standard_hours, work_state, w4, state_w4,
+         gender, job_title, location_code, company_code, census_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING id`,
       [workspaceId, row.id, emp.employee_number, emp.first_name, emp.last_name, emp.email, emp.phone, emp.ssn,
         emp.birth_date, emp.hire_date, emp.address, emp.employment_type, emp.pay_type, emp.pay_rate,
-        emp.standard_hours, emp.work_state, emp.w4, emp.state_w4],
+        emp.standard_hours, emp.work_state, emp.w4, emp.state_w4,
+        emp.gender, emp.job_title, emp.location_code, emp.company_code, emp.census_status],
     );
     for (const election of elections) {
       await client.query(
@@ -51,17 +54,17 @@ export async function createCompany(client, workspaceId, company, people = fakeP
   return row;
 }
 
-async function seed(client, workspaceId, scenarioKey) {
+function seed(client, workspaceId, scenarioKey) {
   const scenario = scenarioByKey(scenarioKey);
   // Scenario sandboxes get the same fake people every time, so instructions can name them.
-  faker.seed(scenario?.seed ?? Math.floor(Math.random() * 1e9));
-  // One client company per training state, each on a different pay cycle.
-  const plans = [['NY', 'weekly'], ['NJ', 'biweekly'], ['CA', 'semimonthly']].map(([state, payFrequency]) => ({
-    company: fakeCompany({ state, payFrequency }),
-    people: fakePeople(state),
-  }));
-  for (const { company, people } of plans) await createCompany(client, workspaceId, company, people);
-  if (scenario?.setup) await scenario.setup({ db: client, ws: workspaceId });
+  return withSeed(scenario?.seed ?? Math.floor(Math.random() * 1e9), async () => {
+    // One client company per training state, each on a different pay cycle.
+    for (const [state, payFrequency] of [['NY', 'weekly'], ['NJ', 'biweekly'], ['CA', 'semimonthly']]) {
+      await createCompany(client, workspaceId, fakeCompany({ state, payFrequency }), fakePeople(state));
+    }
+    await seedPortal(client, workspaceId);
+    if (scenario?.setup) await scenario.setup({ db: client, ws: workspaceId });
+  });
 }
 
 export async function createWorkspace({ name, userId = null, scenario = null, assignmentId = null }) {

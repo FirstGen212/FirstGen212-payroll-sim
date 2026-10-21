@@ -1,6 +1,6 @@
-// Fake company and census generation. Nothing here is real data: SSNs use the
-// 9xx area numbers, which the SSA never issues.
-import { faker } from '@faker-js/faker';
+// Fake company and census generation. Nothing here is real data. SSNs are random
+// but valid-looking, because the data audit teaches trainees to flag 9xx tax IDs.
+import { faker } from './fake.js';
 
 export const DEFAULT_EARNING_CODES = [
   { code: 'REG', label: 'Regular', category: 'regular', taxable: true },
@@ -30,8 +30,14 @@ const CITIES = {
 const pick = (items) => faker.helpers.arrayElement(items);
 
 export function fakeSsn() {
-  return `9${faker.string.numeric(2)}-${faker.string.numeric(2)}-${faker.string.numeric(4)}`;
+  let area = faker.number.int({ min: 100, max: 665 });
+  if (area === 666) area = 667;
+  const group = String(faker.number.int({ min: 1, max: 99 })).padStart(2, '0');
+  const serial = String(faker.number.int({ min: 1, max: 9999 })).padStart(4, '0');
+  return `${area}-${group}-${serial}`;
 }
+
+const JOB_TITLES = ['Home Health Aide', 'Driver', 'Warehouse Associate', 'Office Manager', 'Cook', 'Server', 'Laborer', 'Coordinator', 'Nurse', 'Receptionist', 'Supervisor', 'Technician'];
 
 export function fakeAddress(state) {
   const [city, zip3] = pick(CITIES[state]);
@@ -71,6 +77,11 @@ export function fakeEmployee({ state, index }) {
     pay_rate: salaried ? faker.number.int({ min: 42, max: 125 }) * 1000 : faker.number.float({ min: 16.5, max: 42, fractionDigits: 2 }),
     standard_hours: partTime ? faker.number.int({ min: 16, max: 29 }) : 40,
     work_state: state,
+    gender: pick(['M', 'F']),
+    job_title: pick(JOB_TITLES),
+    location_code: '1000',
+    company_code: state,
+    census_status: 'Active',
     w4: {
       filingStatus: status,
       step2Checked: status === 'married' && faker.datatype.boolean(0.2),

@@ -155,3 +155,62 @@ CREATE TABLE IF NOT EXISTS attempts (
   results JSONB NOT NULL,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Employer portal (onboarding pipeline). Companies double as portal clients.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS onboarding_status TEXT NOT NULL DEFAULT 'Welcome';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS portal_status TEXT NOT NULL DEFAULT 'Onboarding';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS reflect_group TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS company_code TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS go_live_date DATE;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS pipedrive_deal_id TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS contract_products JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS products JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS contact JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS milestones JSONB NOT NULL DEFAULT '{}';
+
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS job_title TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS location_code TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS company_code TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS go_live_date DATE;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS census_status TEXT DEFAULT 'Active';
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS products JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS eligibility TEXT;
+
+CREATE TABLE IF NOT EXISTS activity_log (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  employee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  detail JSONB NOT NULL DEFAULT '{}',
+  actor TEXT,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Payroll documents a client submitted, extracted into rows for review.
+CREATE TABLE IF NOT EXISTS payroll_jobs (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  queue TEXT NOT NULL DEFAULT 'review' CHECK (queue IN ('review', 'csm', 'done')),
+  status TEXT NOT NULL DEFAULT 'Needs review',
+  -- source: what the payroll register really says. rows: what extraction produced (editable).
+  source JSONB NOT NULL,
+  rows JSONB NOT NULL,
+  notes JSONB NOT NULL DEFAULT '[]',
+  proposal JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Census files a client uploaded through a census link.
+CREATE TABLE IF NOT EXISTS census_uploads (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'Ready for review',
+  rows JSONB NOT NULL,
+  -- Answers the client gives when CS asks for missing info, keyed by row and field.
+  client_answers JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

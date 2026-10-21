@@ -561,7 +561,7 @@ async function renderImport() {
   const c = state.company;
   view.innerHTML = `<h1>Import / Census</h1>
     <div class="panel"><h2 style="margin-top:0">Generate fake employees</h2>
-      <p class="muted">Creates realistic, fictitious ${c.state} employees (SSNs start with 9, which are never issued).</p>
+      <p class="muted">Creates realistic, fictitious ${c.state} employees.</p>
       <div class="actions"><input id="gen-count" class="small" type="number" value="10" min="1" max="200"><button id="gen">Generate &amp; add</button></div></div>
     <div class="panel"><h2 style="margin-top:0">Import a census CSV</h2>
       <p class="muted">Columns: employee_number, first_name, last_name, email, phone, ssn, birth_date, hire_date, address_line1, city, state, zip, employment_type (FT/PT), pay_type (hourly/salary), pay_rate, standard_hours, filing_status (single/married/head)</p>
@@ -569,7 +569,7 @@ async function renderImport() {
         <a class="btn secondary" id="csv-template" download="census-template.csv">Download template</a></div>
       <div id="import-result"></div></div>`;
   const header = 'employee_number,first_name,last_name,email,phone,ssn,birth_date,hire_date,address_line1,city,state,zip,employment_type,pay_type,pay_rate,standard_hours,filing_status';
-  $('#csv-template').href = `data:text/csv,${encodeURIComponent(`${header}\n2001,Jane,Sample,jane@example.com,(555) 010-0000,900-12-3456,1990-04-02,2024-01-08,1 Main St,Brooklyn,${c.state},11201,FT,hourly,22.50,40,single\n`)}`;
+  $('#csv-template').href = `data:text/csv,${encodeURIComponent(`${header}\n2001,Jane,Sample,jane@example.com,(555) 010-0000,123-45-6789,1990-04-02,2024-01-08,1 Main St,Brooklyn,${c.state},11201,FT,hourly,22.50,40,single\n`)}`;
   $('#gen').addEventListener('click', async () => {
     const rows = await wsApi(`/companies/${c.id}/census/generate?count=${$('#gen-count').value}`);
     const existing = await wsApi(`/companies/${c.id}/employees`);

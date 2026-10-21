@@ -5,7 +5,10 @@ import { calcPaycheck } from './payroll.js';
 // Monthly amounts in dollars.
 export const PROGRAM_PRICING = {
   planMonthly: { fullTime: 1293, partTime: 780 },
+  // Default product prices. MEC (and others) vary by client, so callers can pass a price map.
   products: { VIRTUAL: 149, MEC: 55, DENTAL: 30, VISION: 20 },
+  // Part-time virtual ("FGPT - Basic") feeds RWPpt at its own price.
+  partTimeProducts: { VIRTUAL: 74 },
 };
 
 // Deduction codes by employment type, as uploaded to the client's payroll system.
@@ -23,10 +26,16 @@ export function perCheck(monthlyDollars, payFrequency) {
 // Week of the month the implementation files go in, by pay cycle.
 export const IMPLEMENTATION_WEEK = { weekly: 1, biweekly: 2, semimonthly: 2, monthly: 3 };
 
-// Monthly RWP amount: the sum of the products the employee elected.
-export function rewardMonthly(products = []) {
+/**
+ * Monthly RWP amount: the sum of the products the employee elected.
+ * products is a list of codes (default prices) or a { CODE: monthlyPrice } map.
+ */
+export function rewardMonthly(products = [], partTime = false) {
+  if (!Array.isArray(products)) {
+    return Object.values(products).filter((v) => v != null && v !== false).reduce((t, v) => t + Number(v), 0);
+  }
   return products.reduce((total, code) => {
-    const price = PROGRAM_PRICING.products[code];
+    const price = (partTime ? PROGRAM_PRICING.partTimeProducts[code] : undefined) ?? PROGRAM_PRICING.products[code];
     if (price == null) throw new Error(`Unknown product: ${code}`);
     return total + price;
   }, 0);
@@ -51,7 +60,7 @@ export function programLines({ payFrequency, partTime = false, products = [], bp
   } else {
     deductions.push({ code: codes.benefitsPayment, label: 'Benefits Payment', amount: -plan, kind: 'posttax' });
   }
-  const reward = rewardMonthly(products);
+  const reward = rewardMonthly(products, partTime);
   if (reward) deductions.push({ code: codes.reward, label: 'Reward Plan', amount: perCheck(reward, payFrequency), kind: 'section125' });
   return { earnings, deductions };
 }
