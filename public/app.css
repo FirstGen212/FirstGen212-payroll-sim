@@ -92,3 +92,22 @@ body:not(.trainer) .trainer-only { display: none; }
 .check-pass { color: var(--good); }
 .check-fail { color: var(--bad); }
 .score { font-size: 18px; font-weight: 700; }
+
+/* Employer portal */
+.nav-group { padding: 14px 20px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.stepper { display: flex; gap: 4px; margin: 10px 0; }
+.stepper div { flex: 1; height: 6px; border-radius: 3px; background: var(--line); }
+.stepper div.done { background: var(--brand); }
+.blocked { background: #fff4e0; color: var(--warn); padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
+.ok-banner { background: #e3f4ea; color: var(--good); padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
+.cell-flag { background: #fff4e0; }
+.cell-edited { background: #e8f0fc; }
+.cell-missing { background: #fde8e7; }
+.grid-input { width: auto; border: 1px solid transparent; background: transparent; padding: 3px 4px; }
+.ask { display: block; font-size: 11px; }
+.grid-input:focus { border-color: var(--brand); background: #fff; }
+.issue.red { color: var(--bad); }
+.issue.amber { color: var(--warn); }
+.checklist li { margin: 6px 0; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } .nav-group { display: none; } }

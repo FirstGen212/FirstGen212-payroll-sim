@@ -65,6 +65,12 @@ ws.post('/companies/:cid/employees', wrap(async (req, res) => {
   res.status(201).json(row);
 }));
 
+ws.get('/employees/:id', wrap(async (req, res) => {
+  const { rows: [row] } = await query('SELECT * FROM employees WHERE id = $1 AND workspace_id = $2', [req.params.id, req.ws]);
+  if (!row) return res.status(404).json({ error: 'Employee not found' });
+  res.json(row);
+}));
+
 ws.patch('/employees/:id', wrap(async (req, res) => {
   const cols = EMPLOYEE_FIELDS.filter((f) => req.body[f] !== undefined);
   if (!cols.length) return res.status(400).json({ error: 'Nothing to update' });

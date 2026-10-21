@@ -92,14 +92,24 @@ const routes = {
   import: renderImport,
   assignments: renderAssignments,
   admin: renderAdmin,
+  clients: renderClients,
+  client: renderClient,
+  queue: renderQueue,
+  csm: renderCsmQueue,
+  job: renderJob,
+  calculator: renderCalculator,
+  census: renderCensusInbox,
+  upload: renderCensusUpload,
+  activity: renderActivity,
 };
-const NO_COMPANY_NEEDED = new Set(['assignments', 'admin']);
+const NO_COMPANY_NEEDED = new Set(['assignments', 'admin', 'clients', 'client', 'queue', 'csm', 'job', 'calculator', 'census', 'upload', 'activity']);
+const NAV_PARENT = { employee: 'employees', run: 'payroll', paycheck: 'reports', client: 'clients', job: 'queue', calculator: 'csm', upload: 'census' };
 
 async function route() {
   const [name = 'dashboard', ...params] = location.hash.replace(/^#\//, '').split('/');
   document.querySelectorAll('.sidenav a').forEach((a) => {
     const target = a.getAttribute('href').slice(2);
-    a.classList.toggle('active', target === name || (name === 'employee' && target === 'employees') || (name === 'run' && target === 'payroll') || (name === 'paycheck' && target === 'reports'));
+    a.classList.toggle('active', target === name || NAV_PARENT[name] === target);
   });
   if (!state.user) return;
   if (!state.company && !NO_COMPANY_NEEDED.has(name)) { view.innerHTML = '<p>No company in this sandbox.</p>'; return; }
@@ -223,9 +233,12 @@ function readEmployeeForm(form) {
 
 async function renderEmployee(id, tab = 'profile') {
   const isNew = id === 'new';
-  const employees = isNew ? [] : await wsApi(`/companies/${state.company.id}/employees`);
-  const emp = isNew ? {} : employees.find((e) => e.id === Number(id));
-  if (!isNew && !emp) throw new Error('Employee not found in this company');
+  const emp = isNew ? {} : await wsApi(`/employees/${id}`);
+  if (!isNew && emp.company_id !== state.company.id) {
+    // Opened from another client's census: switch the company picker to match.
+    state.company = state.companies.find((c) => c.id === emp.company_id) || state.company;
+    $('#company-select').value = state.company.id;
+  }
   const tabs = isNew ? '' : `<div class="tabs">
       <a href="#/employee/${id}/profile" class="${tab === 'profile' ? 'active' : ''}">Profile</a>
       <a href="#/employee/${id}/deductions" class="${tab === 'deductions' ? 'active' : ''}">Deductions</a>
@@ -622,6 +635,316 @@ function parseCsv(text) {
   const [head, ...body] = rows;
   const keys = head.map((h) => h.trim().toLowerCase());
   return body.map((r) => Object.fromEntries(keys.map((k, i) => [k, (r[i] ?? '').trim()])));
+}
+
+// ---------- employer portal ----------
+
+const portalApi = (path, options) => wsApi(`/portal${path}`, options);
+const STATUS_ORDER = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation', 'Awaiting CSM Verification', 'Proposal Ready', 'Eligibility Review', 'Engagement Letter', 'AOP Pending', 'Census', 'Completed'];
+const PRODUCT_LABEL = { VIRTUAL: 'First Gen Health (virtual)', MEC: 'MEC', DENTAL: 'Dental', VISION: 'Vision' };
+const ago = (ts) => { const d = Math.round((Date.now() - new Date(ts)) / 86400000); return d <= 0 ? 'today' : `${d}d ago`; };
+
+async function act(fn, success) {
+  try { const out = await fn(); if (success) toast(success); return out; } catch (err) { toast(err.message); throw err; }
+}
+
+async function renderClients() {
+  const clients = await portalApi('/clients');
+  view.innerHTML = `<h1>Companies</h1>
+    <div class="actions"><label>Onboarding status <select id="ob-filter"><option value="">All</option>${STATUS_ORDER.map((s) => `<option>${s}</option>`).join('')}</select></label></div>
+    <div class="table-wrap"><table id="client-table"><tr><th>Company</th><th>Status</th><th>Onboarding status</th><th>Step</th><th>Pay cycle</th><th class="num">Employees</th><th class="num">Census</th><th></th></tr>
+    ${clients.map((c) => `<tr class="clickable" data-status="${esc(c.onboarding_status)}" onclick="location.hash='#/client/${c.id}'">
+      <td><strong>${esc(c.name)}</strong> <span class="muted">${c.state}</span></td><td><span class="badge ${c.portal_status === 'Active' ? 'finalized' : 'mock'}">${c.portal_status}</span></td>
+      <td>${esc(c.onboarding_status)}</td><td>${c.step} of 7</td><td>${FREQ_LABEL[c.pay_frequency]}</td><td class="num">${c.employee_count}</td>
+      <td class="num">${c.census_pct}%</td><td><a href="#/client/${c.id}">Open</a></td></tr>`).join('')}
+    </table></div>`;
+  $('#ob-filter').addEventListener('change', (ev) => {
+    view.querySelectorAll('#client-table tr[data-status]').forEach((tr) => { tr.style.display = !ev.target.value || tr.dataset.status === ev.target.value ? '' : 'none'; });
+  });
+}
+
+async function renderClient(id, tab = 'overview') {
+  const d = await portalApi(`/clients/${id}`);
+  const c = d.company;
+  const m = c.milestones || {};
+  const s = d.stepper;
+  const tabs = ['overview', 'census', 'launch', 'recon', 'activity']
+    .map((t) => `<a href="#/client/${id}/${t}" class="${tab === t ? 'active' : ''}">${{ overview: 'Overview', census: 'Master Census', launch: 'Pricing & Launch', recon: 'Monthly Recon', activity: 'Activity' }[t]}</a>`).join('');
+  const header = `<h1>${esc(c.name)} <span class="badge ${c.portal_status === 'Active' ? 'finalized' : 'mock'}">${c.portal_status}</span></h1>
+    <div class="panel"><strong>Onboarding Progress · Step ${s.step} of 7 · ${esc(s.name)}</strong> <span class="badge">${esc(c.onboarding_status)}</span>
+      <div class="stepper">${Array.from({ length: 7 }, (_, i) => `<div class="${i < s.step ? 'done' : ''}"></div>`).join('')}</div>
+      ${s.next ? (s.blocked ? `<div class="blocked">${esc(s.blocked)}</div>` : `<div class="ok-banner">Ready to move to <strong>${esc(s.next)}</strong>.</div>`) : '<div class="ok-banner">Onboarding complete.</div>'}
+      <div class="actions">
+        ${s.next ? `<button id="advance" ${s.blocked ? 'disabled' : ''}>Advance to ${esc(s.next)}</button>` : ''}
+        ${c.onboarding_status === 'Eligibility Review' && !m.er_presented ? '<button class="secondary ms" data-ms="er_presented">Sales: present ER</button>' : ''}
+        ${m.er_presented && !m.aop_sent ? '<button class="secondary ms" data-ms="aop_sent">Send AOP</button>' : ''}
+        ${m.aop_sent && !m.aop_signed ? '<button class="secondary ms" data-ms="aop_signed">Client signs AOP (simulate)</button>' : ''}
+        ${m.aop_sent && !m.census_link && !m.census_reconciled && c.onboarding_status !== 'Completed' ? '<button class="secondary ms" data-ms="census_link">Send census upload link</button>' : ''}
+        ${m.aop_signed && !m.payroll_access_requested ? '<button class="secondary ms" data-ms="payroll_access_requested">Request payroll access</button>' : ''}
+      </div></div>
+    <div class="tabs">${tabs}</div>`;
+
+  let body = '';
+  if (tab === 'overview') {
+    const contract = c.contract_products || [];
+    body = `<div class="two-col">
+      <form id="settings" class="panel"><h2 style="margin-top:0">Account Settings</h2><div class="form-grid">
+        <label>Company name<input name="name" value="${esc(c.name)}"></label>
+        <label>Reflect group number<input name="reflect_group" value="${esc(c.reflect_group || '')}" placeholder="e.g. 1G012"></label>
+        <label>Company code<input name="company_code" value="${esc(c.company_code || '')}"></label>
+        <label>Go Live Date<input name="go_live_date" type="date" value="${c.go_live_date || ''}"></label>
+        <label>Pipedrive Deal ID<input name="pipedrive_deal_id" value="${esc(c.pipedrive_deal_id || '')}"></label>
+      </div>
+      <p class="muted">Payroll system: ${esc(c.payroll_provider)} · ${FREQ_LABEL[c.pay_frequency]} · Contact: ${esc(c.contact?.name || '—')} ${c.contact?.title ? `(${esc(c.contact.title)})` : ''}</p>
+      <div class="actions"><button type="submit">Save settings</button></div></form>
+      <div class="panel"><h2 style="margin-top:0">Products</h2>
+        <p class="muted">Signed contract (AOP) lists: ${contract.length ? contract.map((p) => `${PRODUCT_LABEL[p.code] || p.code} $${p.price}`).join(', ') : 'nothing yet'}</p>
+        <table id="prod-table"><tr><th>Product</th><th>Monthly price</th><th></th></tr>
+          ${(c.products || []).map((p, i) => `<tr><td>${PRODUCT_LABEL[p.code] || p.code}</td><td>$${p.price}</td><td><button class="secondary del-prod" data-i="${i}">Delete</button></td></tr>`).join('') || '<tr><td colspan="3" class="muted">No products tagged.</td></tr>'}
+        </table>
+        <form id="add-prod" class="actions"><select name="code">${Object.entries(PRODUCT_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+          <input name="price" type="number" step="1" class="small" placeholder="$/mo" required><button type="submit" class="secondary">Add product</button></form>
+      </div></div>`;
+  } else if (tab === 'census') {
+    body = `<p class="muted">Census ${d.census.pct}% complete (${d.census.complete} of ${d.census.total} people have every required field).</p>
+      <div class="actions"><button id="run-audit">Data audit</button></div><div id="audit-out"></div>
+      <div class="table-wrap"><table><tr><th>Employee ID</th><th>Name</th><th>Status</th><th>Type</th><th>Pay cycle</th><th>Gender</th><th>DOB</th><th>SSN</th><th>ZIP</th><th>Location</th><th>Go Live</th><th>Products</th><th>Eligibility</th></tr>
+      ${d.employees.map((e) => `<tr class="clickable" onclick="location.hash='#/employee/${e.id}'"><td>${esc(e.employee_number)}</td><td>${esc(e.last_name)}, ${esc(e.first_name)}</td><td>${esc(e.census_status || '')}</td>
+        <td>${e.employment_type}</td><td>${FREQ_LABEL[c.pay_frequency]}</td><td class="${e.gender ? '' : 'cell-missing'}">${esc(e.gender || '')}</td><td class="${e.birth_date ? '' : 'cell-missing'}">${e.birth_date || ''}</td>
+        <td>${maskSsn(e.ssn)}</td><td>${esc(e.address?.zip || '')}</td><td>${esc(e.location_code || '')}</td><td>${e.go_live_date || ''}</td>
+        <td>${Object.entries(e.products || {}).map(([k, v]) => `${k} $${v}`).join(', ')}</td><td>${esc(e.eligibility || '')}</td></tr>`).join('')}
+      </table></div><p class="muted">Click a person to edit them in the payroll system. Census edits there show up here.</p>`;
+  } else if (tab === 'launch') {
+    const step = (done, label, button) => `<li>${done ? '✅' : '⬜'} ${label} ${button || ''}</li>`;
+    body = `<div class="panel"><h2 style="margin-top:0">Pricing & launch checklist</h2><ol class="checklist">
+      ${step((c.products || []).length, 'Check the contract and tag the products (Overview tab)')}
+      ${step(m.priced, 'Price the group', `<button class="secondary" id="price">Run Pricing</button>`)}
+      ${step(false, 'Pull 2-3 payrolls and run the mock payroll diagnosis', `<button class="secondary" id="diag">Run mock diagnosis</button>`)}
+      ${step(m.emails_sent, 'Send the email trigger (ActiveCampaign)', m.emails_sent ? '' : '<button class="secondary ms" data-ms="emails_sent">Send emails</button>')}
+      ${step(m.education_done, 'Run employee education', m.education_done ? '' : '<button class="secondary ms" data-ms="education_done">Mark education complete</button>')}
+      ${step(m.audit_passed, 'Data audit clean (no red issues, census at least 90%), then mark good to launch', m.audit_passed ? '' : '<button class="secondary" id="audit2">Data audit</button> <button class="secondary" id="gtl">Mark good to launch</button>')}
+      ${step(m.files_uploaded, 'Build the implementation files and upload them to payroll', `<label>BPT as <select id="bpt-mode"><option value="negativeDeduction">negative deduction</option><option value="reimbursement">reimbursement earning</option></select></label> <button class="secondary" id="files">Build files</button>`)}
+      ${step(false, 'Run a mock payroll in the payroll system and confirm no negative taxes or net pay drops', '<a href="#/payroll">Go to Run Payroll</a>')}
+    </ol></div><div id="launch-out"></div>`;
+  } else if (tab === 'recon') {
+    const r = await portalApi(`/clients/${id}/recon`);
+    if (c.onboarding_status !== 'Completed') body = '<p class="muted">Monthly recon starts once the client is live.</p>';
+    else if (!r.opened) body = `<div class="panel"><p>Upload this month's payroll to start the recon.</p><div class="actions"><input id="recon-month" type="month" value="${new Date().toISOString().slice(0, 7)}"><button id="recon-open">Upload payroll month (simulated)</button></div></div>`;
+    else {
+      body = `<h2>Monthly recon · ${esc(r.month)}</h2>
+      <div class="panel"><h2 style="margin-top:0">1. Fix details · ${r.payChanges.length} to do</h2>
+        ${r.payChanges.map((p) => `<div>#${esc(p.employee.employee_number)} ${esc(p.employee.first_name)} ${esc(p.employee.last_name)}: census annual pay ${dollars(p.annualCensus)}, payroll shows ${dollars(p.annualPayroll)}
+          <button class="secondary rc" data-a="update_pay" data-e="${esc(p.employee.employee_number)}">Update</button></div>`).join('') || '<p class="muted">Nothing to fix.</p>'}</div>
+      <div class="panel"><h2 style="margin-top:0">2. Check active people · ${r.missing.length} to do</h2>
+        ${r.missing.map((e) => `<div>#${esc(e.employee_number)} ${esc(e.first_name)} ${esc(e.last_name)} (${esc(e.census_status)}) is not in this month's payroll.
+          <input type="date" class="term-date" value="${new Date().toISOString().slice(0, 10)}"> <button class="secondary rc" data-a="terminate" data-e="${esc(e.employee_number)}">Terminate</button></div>`).join('') || '<p class="muted">Everyone active was paid.</p>'}</div>
+      <div class="panel"><h2 style="margin-top:0">3. Price & approve · ${r.newHires.length} to do</h2>
+        ${r.newHires.map((p) => `<div>#${esc(p.emp_id)} ${esc(p.first_name)} ${esc(p.last_name)} is in payroll but not the census (${dollars(p.gross)} this check).
+          <button class="secondary rc" data-a="add_new_hire" data-e="${esc(p.emp_id)}">Add to census</button> <button class="secondary rc" data-a="price_new_hire" data-e="${esc(p.emp_id)}">Price & approve</button></div>`).join('') || '<p class="muted">No new people.</p>'}</div>
+      <div class="actions"><button class="rc" data-a="finish">4. Finish recon</button></div>`;
+    }
+  } else {
+    body = activityTable(d.activity);
+  }
+  view.innerHTML = header + body;
+
+  const reload = () => renderClient(id, tab);
+  $('#advance')?.addEventListener('click', () => act(() => portalApi(`/clients/${id}/advance`, { method: 'POST' }), 'Advanced').then(reload));
+  view.querySelectorAll('.ms').forEach((b) => b.addEventListener('click', () => act(() => portalApi(`/clients/${id}/milestones/${b.dataset.ms}`, { method: 'POST' }), 'Done').then(reload)));
+  $('#settings')?.addEventListener('submit', (ev) => { ev.preventDefault(); act(() => portalApi(`/clients/${id}`, { method: 'PATCH', body: Object.fromEntries(new FormData(ev.target)) }), 'Saved').then(reload); });
+  $('#add-prod')?.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const products = [...(c.products || []).filter((p) => p.code !== f.get('code')), { code: f.get('code'), price: Number(f.get('price')) }];
+    act(() => portalApi(`/clients/${id}`, { method: 'PATCH', body: { products } }), 'Product applied').then(reload);
+  });
+  view.querySelectorAll('.del-prod').forEach((b) => b.addEventListener('click', () => {
+    const products = c.products.filter((_, i) => i !== Number(b.dataset.i));
+    act(() => portalApi(`/clients/${id}`, { method: 'PATCH', body: { products } }), 'Product removed').then(reload);
+  }));
+  const showAudit = async (target) => {
+    const a = await portalApi(`/clients/${id}/audit`);
+    target.innerHTML = `<div class="panel"><strong>${a.issues.length} issues found · ${a.peopleAffected} of ${a.people} people affected.</strong> This only checks. Nothing is changed.
+      <p><span class="issue red">${a.red} to fix before sending</span> · <span class="issue amber">${a.amber} to fix</span></p>
+      <table><tr><th>Employee</th><th>Category</th><th>Field</th><th>Fix</th></tr>${a.issues.map((i) => `<tr class="issue ${i.severity}"><td>${i.employeeNumber ? `#${esc(i.employeeNumber)} ${esc(i.name)}` : 'Company'}</td><td>${esc(i.category)}</td><td>${esc(i.field)}</td><td>${esc(i.message)}</td></tr>`).join('')}</table></div>`;
+  };
+  $('#run-audit')?.addEventListener('click', () => showAudit($('#audit-out')));
+  $('#audit2')?.addEventListener('click', () => showAudit($('#launch-out')));
+  $('#gtl')?.addEventListener('click', () => act(() => portalApi(`/clients/${id}/good-to-launch`, { method: 'POST' }), 'Marked good to launch').then(reload));
+  $('#price')?.addEventListener('click', () => act(() => portalApi(`/clients/${id}/price`, { method: 'POST' })).then((r) => { toast(`Priced: ${r.eligible} eligible`); reload(); }));
+  $('#diag')?.addEventListener('click', async () => {
+    const r = await act(() => portalApi(`/clients/${id}/mock-diagnosis`));
+    $('#launch-out').innerHTML = `<div class="panel"><h2 style="margin-top:0">Mock Payroll Diagnosis</h2><p class="muted">Worst-case net change per paycheck across 3 pay periods. REMOVE when ≤ $${r.thresholds.remove}; BUFFER when $0 to $${r.thresholds.buffer}.</p>
+      <table><tr><th>Employee</th><th class="num">Worst net change</th><th>Result</th><th>Break-even</th></tr>${r.results.map((x) => `<tr><td>#${esc(x.employeeNumber)} ${esc(x.name)}</td><td class="num">${dollars(x.worstDelta)}</td>
+        <td><span class="badge ${x.status === 'OK' ? 'finalized' : x.status === 'BUFFER' ? 'mock' : 'warn'}">${x.status}</span></td><td>${x.breakEven ? `Drop ${x.breakEven.drop.join(', ')}` : ''}</td></tr>`).join('')}</table></div>`;
+  });
+  $('#files')?.addEventListener('click', async () => {
+    const mode = $('#bpt-mode').value;
+    const r = await act(() => portalApi(`/clients/${id}/launch-files?bptMode=${mode}`));
+    const csv = (rows) => ['employee_id,last_name,first_name,code,amount', ...rows.map((l) => [l.employee_id, l.last_name, l.first_name, l.code, l.amount].join(','))].join('\n');
+    const link = (name, rows) => `<a class="btn secondary" download="${name}.csv" href="data:text/csv,${encodeURIComponent(csv(rows))}">${name}.csv (${rows.length})</a>`;
+    $('#launch-out').innerHTML = `<div class="panel"><h2 style="margin-top:0">Implementation files</h2>
+      <p>${FREQ_LABEL[r.payFrequency]} payroll: upload in <strong>week ${r.implementationWeek}</strong> of the month.</p>
+      <div class="actions">${link('FGH_plan', r.files.plan)}${link('BPT_benefits_payment', r.files.benefitsPayment)}${link('RWP_reward_plan', r.files.reward)}</div>
+      <table><tr><th>Employee</th><th>Plan</th><th class="num">Amount</th><th>BPT</th><th class="num">Amount</th><th>RWP</th><th class="num">Amount</th></tr>
+      ${r.files.plan.map((l, i) => `<tr><td>#${esc(l.employee_id)} ${esc(l.first_name)} ${esc(l.last_name)}</td><td>${l.code}</td><td class="num">${dollars(l.amount)}</td><td>${r.files.benefitsPayment[i].code}</td><td class="num">${dollars(r.files.benefitsPayment[i].amount)}</td><td>${r.files.reward[i].code}</td><td class="num">${dollars(r.files.reward[i].amount)}</td></tr>`).join('')}</table>
+      <div class="actions"><button id="apply-files">Upload files into payroll</button></div></div>`;
+    $('#apply-files').addEventListener('click', () => act(() => portalApi(`/clients/${id}/launch-files/apply`, { method: 'POST', body: { bptMode: mode } }), 'Files uploaded to payroll. Run a mock payroll next.').then(reload));
+  });
+  $('#recon-open')?.addEventListener('click', () => act(() => portalApi(`/clients/${id}/recon/open`, { method: 'POST', body: { month: $('#recon-month').value } }), 'Payroll month uploaded').then(reload));
+  view.querySelectorAll('.rc').forEach((b) => b.addEventListener('click', () => {
+    const date = b.parentElement.querySelector('.term-date')?.value;
+    act(() => portalApi(`/clients/${id}/recon/action`, { method: 'POST', body: { action: b.dataset.a, employeeNumber: b.dataset.e, date } }), 'Saved').then(reload);
+  }));
+}
+
+function activityTable(rows) {
+  return `<div class="table-wrap"><table><tr><th>When</th><th>Company</th><th>Action</th><th>By</th><th>Details</th></tr>
+    ${rows.map((a) => `<tr><td>${new Date(a.at).toLocaleString()}</td><td>${esc(a.company || '')}</td><td>${esc(a.action)}</td><td>${esc(a.actor || '')}</td>
+      <td class="muted">${esc(Object.entries(a.detail || {}).filter(([k]) => k !== 'payroll' && k !== 'expected').map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · '))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nothing yet.</td></tr>'}
+  </table></div>`;
+}
+
+async function renderActivity() {
+  view.innerHTML = `<h1>Activity Log</h1>${activityTable(await portalApi('/activity'))}`;
+}
+
+function jobsTable(jobs, kind) {
+  if (!jobs.length) return '<p class="muted">All caught up.</p>';
+  return `<div class="table-wrap"><table><tr><th>Company</th><th class="num">Employees</th>${kind === 'review' ? '<th>Flags</th>' : ''}<th>Status</th><th>Queued</th><th></th></tr>
+    ${jobs.map((j) => `<tr><td><strong>${esc(j.company)}</strong></td><td class="num">${j.employees}</td>${kind === 'review' ? `<td>${j.flags ? `<span class="badge warn">${j.flags} to verify</span>` : '—'}</td>` : ''}
+      <td>${esc(j.status)}</td><td>${ago(j.created_at)}</td>
+      <td>${kind === 'review' ? `<a class="btn" href="#/job/${j.id}">Open review</a>` : `<a class="btn" href="#/calculator/${j.id}">Open calculator</a>`}</td></tr>
+      ${j.notes.length ? `<tr><td colspan="6" class="muted">${j.notes.map((n) => `${esc(n.author)}: ${esc(n.text)}`).join('<br>')}</td></tr>` : ''}`).join('')}
+  </table></div>`;
+}
+
+async function renderQueue() {
+  view.innerHTML = `<h1>Onboarding Queue</h1><p class="muted">Payroll jobs awaiting human review. Open one to verify the extracted data against the source document, then confirm and send.</p>${jobsTable(await portalApi('/queues/review'), 'review')}`;
+}
+
+async function renderCsmQueue() {
+  view.innerHTML = `<h1>Proposal Requested Queue</h1><p class="muted">Finalized payroll jobs awaiting CSM follow-up. Open the calculator, build the proposal, send it to Pipedrive, then mark the job complete.</p>${jobsTable(await portalApi('/queues/csm'), 'csm')}`;
+}
+
+const JOB_COLS = [['gross', 'Gross'], ['avg_hrs', 'Avg hrs'], ['rate', 'Rate'], ['fed_filing', 'Fed filing'], ['dependents', 'Deps'], ['state_filing', 'State filing'], ['fed_tax', 'Fed tax'], ['ss', 'SS'], ['medicare', 'Medicare'], ['state_tax', 'State tax'], ['net_pay', 'Net pay']];
+
+async function renderJob(id) {
+  const job = await portalApi(`/jobs/${id}`);
+  const verified = job.rows.filter((r) => r.verified).length;
+  view.innerHTML = `<h1>Payroll Review · ${esc(job.company)}</h1>
+    <p class="muted">${verified}/${job.rows.length} verified · Status: ${esc(job.status)}. Amber cells are low-confidence extractions. Compare each flagged row with the source register, correct anything wrong, then verify it.</p>
+    <div class="actions"><button id="confirm">Confirm &amp; send to CSM queue</button><label><input type="checkbox" id="flagged-only" checked> Flagged only</label>
+      <button class="secondary" id="show-source">View source document</button></div>
+    <div id="source" hidden></div>
+    <div class="table-wrap"><table id="job-grid"><tr><th>#</th><th>Employee</th>${JOB_COLS.map(([, l]) => `<th>${l}</th>`).join('')}<th>Notes</th><th></th></tr>
+      ${job.rows.map((r, i) => {
+        const flagged = new Set(r.flags.map((f) => f.field));
+        return `<tr data-i="${i}" data-flagged="${r.flags.length ? 1 : 0}" ${r.flags.length ? '' : 'style="display:none"'}><td>${i + 1}</td><td>${esc(r.first_name)} ${esc(r.last_name)} <span class="muted">#${esc(r.emp_id)}</span></td>
+          ${JOB_COLS.map(([f]) => `<td class="${flagged.has(f) ? 'cell-flag' : ''}"><input class="grid-input" name="${f}" value="${esc(r[f] ?? '')}" size="${Math.max(5, String(r[f] ?? '').length + 1)}" ${job.queue !== 'review' ? 'disabled' : ''}></td>`).join('')}
+          <td class="muted">${r.flags.map((f) => esc(f.note)).join('; ')}</td>
+          <td>${r.verified ? '<span class="badge finalized">Verified</span>' : `<button class="secondary verify">Verify</button>`}</td></tr>`;
+      }).join('')}
+    </table></div>
+    <div class="panel"><h2 style="margin-top:0">Notes for the CSM / payroll team</h2>${job.notes.map((n) => `<div class="muted">${esc(n.author)}: ${esc(n.text)}</div>`).join('')}
+      <form id="note" class="actions"><input name="text" placeholder="Add a note…" style="flex:1"><button class="secondary">Post</button></form></div>`;
+  $('#flagged-only').addEventListener('change', (ev) => view.querySelectorAll('#job-grid tr[data-i]').forEach((tr) => { tr.style.display = ev.target.checked && tr.dataset.flagged === '0' ? 'none' : ''; }));
+  $('#show-source').addEventListener('click', () => {
+    const el = $('#source');
+    el.hidden = !el.hidden;
+    el.innerHTML = `<div class="panel"><h2 style="margin-top:0">Payroll Register (source document)</h2><div class="table-wrap"><table><tr><th>Employee</th>${JOB_COLS.map(([, l]) => `<th>${l}</th>`).join('')}</tr>
+      ${job.source.map((r) => `<tr><td>${esc(r.first_name)} ${esc(r.last_name)} #${esc(r.emp_id)}</td>${JOB_COLS.map(([f]) => `<td>${esc(r[f] ?? '')}</td>`).join('')}</tr>`).join('')}</table></div></div>`;
+  });
+  view.querySelectorAll('.verify').forEach((b) => b.addEventListener('click', async () => {
+    const tr = b.closest('tr');
+    const body = { verified: true };
+    tr.querySelectorAll('.grid-input').forEach((inp) => {
+      const v = inp.value.trim();
+      body[inp.name] = v === '' ? null : ['fed_filing', 'state_filing'].includes(inp.name) ? v : Number(v);
+    });
+    await act(() => portalApi(`/jobs/${id}/rows/${tr.dataset.i}`, { method: 'PATCH', body }), 'Row verified');
+    renderJob(id);
+  }));
+  $('#confirm').addEventListener('click', () => act(() => portalApi(`/jobs/${id}/confirm`, { method: 'POST' }), 'Sent to the CSM queue').then(() => { location.hash = '#/csm'; }));
+  $('#note').addEventListener('submit', (ev) => { ev.preventDefault(); act(() => portalApi(`/jobs/${id}/notes`, { method: 'POST', body: { text: new FormData(ev.target).get('text') } })).then(() => renderJob(id)); });
+}
+
+async function renderCalculator(id, price = '149') {
+  const job = await portalApi(`/jobs/${id}`);
+  const r = await portalApi(`/jobs/${id}/calculator?price=${price}`);
+  const s = r.summary;
+  view.innerHTML = `<h1>Calculator · ${esc(job.company)} <span class="muted">Payroll — ${s.employees} employees</span></h1>
+    <div class="cards">
+      <div class="card"><div class="label">Eligibility</div><div class="value">${s.eligible}/${s.employees} (${s.eligiblePct}%)</div></div>
+      <div class="card"><div class="label">Monthly savings</div><div class="value">${dollars(s.monthlySavings)}</div><div class="muted">${dollars(s.avgSavingsPerEe)} per EE · ${dollars(s.annualSavings)}/yr</div></div>
+      <div class="card"><div class="label">Valuation increase</div><div class="value">${dollars(s.valuationIncrease)}</div><div class="muted">at 3.8x EBITDA</div></div>
+      <div class="card"><div class="label">Allotment distribution</div><div class="value" style="font-size:14px">&lt;$139: ${s.allotmentDistribution.under139} · $139–149: ${s.allotmentDistribution.from139to149} · $149+: ${s.allotmentDistribution.over149}</div></div>
+    </div>
+    <div class="panel"><h2 style="margin-top:0">Margin Strategy Analyzer</h2><table><tr><th>Program</th><th class="num">Eligible</th><th class="num">Margin %</th><th class="num">12-month revenue</th><th></th></tr>
+      ${r.tiers.map((t) => `<tr class="clickable" onclick="location.hash='#/calculator/${id}/${t.price}'"><td>$${t.price} ${t.current ? '<span class="badge">Current</span>' : ''} ${t.best ? '<span class="badge finalized">Best</span>' : ''}</td>
+        <td class="num">${t.eligible}</td><td class="num">${t.marginPct}%</td><td class="num">${dollars(t.twelveMonthProfit)}</td><td></td></tr>`).join('')}</table>
+      <div class="actions">${job.proposal ? `<span class="badge finalized">Proposal sent to Pipedrive at $${job.proposal.programPrice}</span>` : `<button id="proposal">Create proposal at $${price} &amp; send to Pipedrive</button>`}
+        <button class="secondary" id="complete">Mark complete</button><button class="secondary" id="pushback">Push back to payroll queue</button></div></div>
+    <div class="table-wrap"><table><tr><th>Name</th><th>State</th><th class="num">Gross (annual)</th><th class="num">First Gen /check</th><th class="num">Tax pre-FG</th><th class="num">Tax with FG</th><th class="num">Mo. allotment</th><th>Eligibility</th></tr>
+      ${r.rows.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.workState}</td><td class="num">${dollars(x.annualGross)}</td><td class="num">${dollars(x.firstGenPerPeriod)}</td>
+        <td class="num">${dollars(x.taxPreFirstGen)}</td><td class="num">${dollars(x.taxPerPeriod)}</td><td class="num">${dollars(x.monthlyAllotment)}</td>
+        <td>${x.eligible ? '<span class="badge finalized">Eligible</span>' : `<span class="badge warn">${esc(x.label)}</span>`}</td></tr>`).join('')}</table></div>
+    <p class="muted">Monthly allotment = (annual tax saved by the FGH pre-tax deduction ÷ 12) × 75%. Rules run top to bottom; the first match wins.</p>`;
+  $('#proposal')?.addEventListener('click', () => act(() => portalApi(`/jobs/${id}/proposal`, { method: 'POST', body: { programPrice: Number(price) } }), 'Proposal sent to Pipedrive').then(() => renderCalculator(id, price)));
+  $('#complete').addEventListener('click', () => act(() => portalApi(`/jobs/${id}/complete`, { method: 'POST' }), 'Marked complete').then(() => { location.hash = '#/csm'; }));
+  $('#pushback').addEventListener('click', () => {
+    const reason = prompt('Why are you pushing this back?');
+    if (reason) act(() => portalApi(`/jobs/${id}/push-back`, { method: 'POST', body: { reason } }), 'Pushed back').then(() => { location.hash = '#/csm'; });
+  });
+}
+
+async function renderCensusInbox() {
+  const uploads = await portalApi('/census-uploads');
+  view.innerHTML = `<h1>Census Review</h1><p class="muted">Review uploads and confirm employee updates.</p>
+    ${uploads.length ? `<div class="table-wrap"><table><tr><th>Company</th><th>File</th><th class="num">Employees</th><th>Status</th><th>Uploaded</th><th></th></tr>
+      ${uploads.map((u) => `<tr><td><strong>${esc(u.company)}</strong></td><td>Census.xlsx</td><td class="num">${u.employees}</td><td>${esc(u.status)}</td><td>${ago(u.created_at)}</td><td><a class="btn" href="#/upload/${u.id}">View</a></td></tr>`).join('')}
+    </table></div>` : '<p class="muted">No census uploads. Send a census link from a client page once the AOP is out.</p>'}`;
+}
+
+const CENSUS_COLS = [['employee_number', 'Employee ID'], ['first_name', 'First'], ['last_name', 'Last'], ['birth_date', 'DOB'], ['gender', 'Gender'], ['ssn', 'SSN'], ['email', 'Email'], ['phone', 'Phone'], ['address.zip', 'ZIP'], ['hire_date', 'Start date'], ['filing_status', 'Filing'], ['dependents', 'Deps'], ['gross_annual', 'Gross annual'], ['avg_hours', 'Avg hrs/wk'], ['employment_type', 'FT/PT']];
+const getPath = (o, p) => p.split('.').reduce((x, k) => (x == null ? x : x[k]), o);
+
+async function renderCensusUpload(id) {
+  const u = await portalApi(`/census-uploads/${id}`);
+  view.innerHTML = `<h1>Census · ${esc(u.company)}</h1>
+    <p><strong>${u.pct}% complete</strong> · ${u.rows.length} employees · ${esc(u.status)}. Red cells are missing. Use "Ask client" to request missing info; fix anything wrong; delete duplicate rows.</p>
+    <div class="actions"><button id="save">Save</button><button class="secondary" id="send">Save &amp; send to CSM</button></div>
+    <div class="table-wrap"><table id="census-grid"><tr>${CENSUS_COLS.map(([, l]) => `<th>${l}</th>`).join('')}<th></th></tr>
+      ${u.rows.map((r, i) => `<tr data-i="${i}">${CENSUS_COLS.map(([f]) => {
+        const v = getPath(r, f);
+        const invalid = (f === 'ssn' && v && String(v).replace(/\D/g, '').length !== 9) || (f === 'address.zip' && v && !/^\d{5}$/.test(v));
+        const missing = v == null || v === '' || invalid;
+        return `<td class="${missing ? 'cell-missing' : ''}"><input class="grid-input" name="${f}" value="${esc(v ?? '')}" size="${Math.max(6, String(v ?? '').length + 1)}">${missing ? `<a href="#" class="ask" data-f="${f}">Ask client</a>` : ''}</td>`;
+      }).join('')}<td><button class="secondary del-row">Delete</button></td></tr>`).join('')}
+    </table></div>`;
+  const collect = () => [...view.querySelectorAll('#census-grid tr[data-i]')].map((tr) => {
+    const row = structuredClone(u.rows[Number(tr.dataset.i)]);
+    tr.querySelectorAll('.grid-input').forEach((inp) => {
+      const v = inp.value.trim() === '' ? null : inp.value.trim();
+      if (inp.name === 'address.zip') row.address = { ...(row.address || {}), zip: v };
+      else row[inp.name] = ['dependents', 'gross_annual', 'avg_hours'].includes(inp.name) && v != null ? Number(v) : v;
+    });
+    return row;
+  });
+  view.querySelectorAll('.ask').forEach((a) => a.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const tr = a.closest('tr');
+    const r = await portalApi(`/census-uploads/${id}/ask`, { method: 'POST', body: { employeeNumber: $('[name=employee_number]', tr).value, field: a.dataset.f } });
+    toast(r.message);
+  }));
+  view.querySelectorAll('.del-row').forEach((b) => b.addEventListener('click', () => b.closest('tr').remove()));
+  $('#save').addEventListener('click', () => act(() => portalApi(`/census-uploads/${id}/rows`, { method: 'PUT', body: { rows: collect() } }), 'Saved').then(() => renderCensusUpload(id)));
+  $('#send').addEventListener('click', async () => {
+    await act(() => portalApi(`/census-uploads/${id}/rows`, { method: 'PUT', body: { rows: collect() } }));
+    const r = await act(() => portalApi(`/census-uploads/${id}/send`, { method: 'POST' }));
+    toast(`Census reconciled: ${r.updated} updated, ${r.added} added`);
+    renderCensusUpload(id);
+  });
 }
 
 // ---------- training ----------

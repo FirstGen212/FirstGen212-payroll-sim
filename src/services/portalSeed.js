@@ -71,7 +71,7 @@ export async function seedPortal(client, ws) {
   await client.query(
     `UPDATE companies SET onboarding_status = 'Completed', portal_status = 'Active', reflect_group = $2, company_code = 'NY',
        go_live_date = $3, pipedrive_deal_id = $4, contract_products = $5, products = $5,
-       contact = $6, milestones = '{"aop_signed": true, "census_reconciled": true, "priced": true, "audit_passed": true, "launched": true}'
+       contact = $6, milestones = '{"proposal_sent": true, "er_presented": true, "aop_sent": true, "aop_signed": true, "census_reconciled": true, "priced": true, "emails_sent": true, "education_done": true, "audit_passed": true}'
      WHERE id = $1`,
     [ny.id, `1G${faker.string.numeric(3)}`, goLive, faker.string.numeric(5), JSON.stringify(nyProducts),
       { name: faker.person.fullName(), title: 'HR Manager', email: 'hr@example.com', phone: faker.phone.number({ style: 'national' }) }]);
@@ -109,8 +109,11 @@ export async function seedPortal(client, ws) {
     row[field] = null;
   }
   // Plant data problems for the audit: a short SSN and a 4-digit ZIP.
-  const [shortSsn, badZip] = faker.helpers.arrayElements(censusRows.filter((r) => r.ssn), 2);
-  shortSsn.ssn = shortSsn.ssn.replace(/-/g, '').slice(1);
+  // The client can supply the right values when asked.
+  const [shortSsn, badZip] = faker.helpers.arrayElements(censusRows.filter((r) => r.ssn && !answers[`${r.employee_number}.ssn`]), 2);
+  answers[`${shortSsn.employee_number}.ssn`] = shortSsn.ssn;
+  shortSsn.ssn = shortSsn.ssn.replace(/-/g, '').slice(0, 8);
+  answers[`${badZip.employee_number}.address.zip`] = badZip.address.zip;
   badZip.address = { ...badZip.address, zip: badZip.address.zip.slice(1) };
   // The census also has a duplicate person typed twice with a new email.
   const dupe = { ...pick(censusRows), employee_number: String(1000 + censusRows.length), email: 'second.entry@example.com' };
