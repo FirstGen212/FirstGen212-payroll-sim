@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { calcPaycheck } from '../src/engine/payroll.js';
-import { perCheck, programDeductions, compareWithProgram } from '../src/engine/program.js';
+import { perCheck, programDeductions, compareWithProgram, rewardMonthly } from '../src/engine/program.js';
 
 const nyEmployee = { workState: 'NY', payFrequency: 'biweekly', w4: { filingStatus: 'single' }, stateW4: { filingStatus: 'single' } };
 const tax = (check, code) => check.taxes.find((t) => t.code === code).amount;
@@ -74,8 +74,14 @@ test('Program plan amount per check by pay cycle', () => {
 });
 
 test('Program codes switch for part-time employees', () => {
-  const lines = programDeductions({ payFrequency: 'weekly', partTime: true, benefitsPayment: 250, reward: 10 });
+  const lines = programDeductions({ payFrequency: 'weekly', partTime: true, benefitsPayment: 250, products: ['MEC'] });
   assert.deepEqual(lines.map((l) => l.code), ['FGPT', 'BPTpt', 'RWPpt']);
+});
+
+test('RWP is the elected products spread per check', () => {
+  assert.equal(rewardMonthly(['VIRTUAL', 'DENTAL', 'VISION']), 199);
+  const rwp = programDeductions({ payFrequency: 'biweekly', products: ['VIRTUAL', 'MEC'] }).find((l) => l.code === 'RWP');
+  assert.equal(rwp.amount, perCheck(204, 'biweekly'));
 });
 
 test('Launch check flags a net pay decrease', () => {
