@@ -8,6 +8,7 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).then((out
 }).catch(next);
 
 portalRoutes.get('/clients', wrap((req) => portal.listClients(req.ws)));
+portalRoutes.post('/clients', wrap((req) => portal.newClient(req.ws, req.body)));
 portalRoutes.get('/clients/:id', wrap((req) => portal.clientDetail(req.ws, Number(req.params.id))));
 portalRoutes.patch('/clients/:id', wrap((req) => portal.updateClient(req.ws, Number(req.params.id), req.body)));
 portalRoutes.post('/clients/:id/advance', wrap(async (req) => ({ status: await portal.advance(req.ws, Number(req.params.id)) })));

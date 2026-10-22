@@ -675,6 +675,15 @@ async function act(fn, success) {
 async function renderClients() {
   const clients = await portalApi('/clients');
   view.innerHTML = `<h1>Companies</h1>
+    <details class="panel" id="new-client-box"><summary><strong>+ New client</strong> <span class="muted">A prospect signs up and starts at Welcome</span></summary>
+      <form id="new-client" class="form-grid" style="margin-top:12px">
+        <label>Company name<input name="name" placeholder="Leave blank for a generated name"></label>
+        <label>State<select name="state"><option>NY</option><option>NJ</option><option>CA</option></select></label>
+        <label>Pay cycle<select name="payFrequency">${Object.entries(FREQ_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'biweekly' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Employees<input name="employees" type="number" min="5" max="200" value="25"></label>
+        <label>Payroll system<select name="payrollProvider">${['ADP Workforce Now', 'ADP Run', 'Paychex Flex', 'Paylocity', 'Gusto', 'Viventium'].map((p) => `<option>${p}</option>`).join('')}</select></label>
+        <div class="actions"><button type="submit">Create client</button></div>
+      </form></details>
     <div class="actions"><label>Onboarding status <select id="ob-filter"><option value="">All</option>${STATUS_ORDER.map((s) => `<option>${s}</option>`).join('')}</select></label></div>
     <div class="table-wrap"><table id="client-table"><tr><th>Company</th><th>Status</th><th>Onboarding status</th><th>Step</th><th>Pay cycle</th><th class="num">Employees</th><th class="num">Census</th><th></th></tr>
     ${clients.map((c) => `<tr class="clickable" data-status="${esc(c.onboarding_status)}" onclick="location.hash='#/client/${c.id}'">
@@ -682,6 +691,12 @@ async function renderClients() {
       <td>${esc(c.onboarding_status)}</td><td>${c.step} of 7</td><td>${FREQ_LABEL[c.pay_frequency]}</td><td class="num">${c.employee_count}</td>
       <td class="num">${c.census_pct}%</td><td><a href="#/client/${c.id}">Open</a></td></tr>`).join('')}
     </table></div>`;
+  $('#new-client').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const r = await act(() => portalApi('/clients', { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) }), 'Client created');
+    await loadCompanies();
+    location.hash = `#/client/${r.id}`;
+  });
   $('#ob-filter').addEventListener('change', (ev) => {
     view.querySelectorAll('#client-table tr[data-status]').forEach((tr) => { tr.style.display = !ev.target.value || tr.dataset.status === ev.target.value ? '' : 'none'; });
   });
@@ -713,9 +728,12 @@ async function renderClient(id, tab = 'overview') {
     const contract = c.contract_products || [];
     const docsStage = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation'].includes(c.onboarding_status);
     body = `${docsStage ? `<form id="docs" class="panel client-side"><h2 style="margin-top:0">Payroll documents <span class="badge">Client view</span></h2>
-      <p class="muted">Play the client: run a payroll for <strong>${esc(c.name)}</strong> in the payroll system, export its register (Reports → Check register → Export register), then upload it here. The document reader extracts it into the Onboarding Queue for review.</p>
+      ${d.job ? `<div class="ok-banner">Payroll register received ${ago(d.job.created_at)} · ${esc(d.job.status)} ·
+        <a href="#/job/${d.job.id}">${d.job.queue === 'review' ? 'Open the review in the Onboarding Queue' : d.job.queue === 'csm' ? 'Open it in Proposal Requested' : 'View the job'} →</a></div>` : ''}
+      <p class="muted">${d.job ? 'Need a newer register? Upload again to replace the one waiting for review.' : ''} Play the client: run a payroll for <strong>${esc(c.name)}</strong> in the payroll system, export its register (Reports → Check register → Export register), then upload it here. The document reader extracts it into the Onboarding Queue for review.</p>
       <div class="actions"><input type="file" name="file" accept=".csv,text/csv" required><button type="submit">Upload payroll register</button>
-        <a href="#" onclick="openOtherApp('payroll', '#/reports', ${c.id}); return false">Open the payroll system ↗</a></div></form>` : ''}
+        <a href="#" onclick="openOtherApp('payroll', '#/reports', ${c.id}); return false">Open the payroll system ↗</a></div>
+      <p class="muted" style="margin-bottom:0">Short on time? <button type="button" class="secondary" id="docs-sim">Client sends their latest register (simulate)</button></p></form>` : ''}
     <div class="two-col">
       <form id="settings" class="panel"><h2 style="margin-top:0">Account Settings</h2><div class="form-grid">
         <label>Company name<input name="name" value="${esc(c.name)}"></label>
@@ -785,6 +803,11 @@ async function renderClient(id, tab = 'overview') {
     const file = ev.target.file.files[0];
     const r = await act(async () => portalApi(`/clients/${id}/payroll-docs`, { method: 'POST', body: { csv: await file.text(), fileName: file.name } }));
     toast(`Register uploaded: ${r.employees} employees extracted. Review it in the Onboarding Queue.`);
+    reload();
+  });
+  $('#docs-sim')?.addEventListener('click', async () => {
+    const r = await act(() => portalApi(`/clients/${id}/payroll-docs`, { method: 'POST', body: { simulate: true } }));
+    toast(`Register received: ${r.employees} employees extracted. Review it in the Onboarding Queue.`);
     reload();
   });
   $('#settings')?.addEventListener('submit', (ev) => { ev.preventDefault(); act(() => portalApi(`/clients/${id}`, { method: 'PATCH', body: Object.fromEntries(new FormData(ev.target)) }), 'Saved').then(reload); });

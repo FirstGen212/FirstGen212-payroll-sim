@@ -7,6 +7,9 @@ import { perCheck, PROGRAM_PRICING, PROGRAM_CODES, IMPLEMENTATION_WEEK, rewardMo
 import { PAY_PERIODS } from '../engine/taxTables2026.js';
 import { registerLine, simulateExtraction } from './portalSeed.js';
 import { registerFromCsv } from '../engine/registerFormat.js';
+import { createCompany, fakePeople } from './workspaces.js';
+import { fakeCompany } from './census.js';
+import { faker } from './fake.js';
 
 export const ONBOARDING_STATUSES = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation', 'Awaiting CSM Verification',
   'Proposal Ready', 'Eligibility Review', 'Engagement Letter', 'AOP Pending', 'Census', 'Completed'];
@@ -89,12 +92,14 @@ export async function clientDetail(ws, id) {
   const c = await getCompany(db, ws, id);
   const employees = await employeesOf(db, c.id);
   const { rows: activity } = await query('SELECT * FROM activity_log WHERE company_id = $1 ORDER BY id DESC LIMIT 50', [c.id]);
+  const { rows: [job] } = await query('SELECT id, queue, status, created_at FROM payroll_jobs WHERE company_id = $1 ORDER BY id DESC LIMIT 1', [c.id]);
   const step = STEP_OF[c.onboarding_status];
   const idx = ONBOARDING_STATUSES.indexOf(c.onboarding_status);
   return {
     company: c,
     stepper: { step, of: 7, name: STEPS[step - 1], pct: Math.round((step / 7) * 100), next: ONBOARDING_STATUSES[idx + 1] || null, blocked: await gate(db, c) },
     census: censusCompletion(employees),
+    job: job || null,
     employees,
     activity,
   };
@@ -131,6 +136,12 @@ export async function setMilestone(ws, id, name) {
     if (ok !== true) throw new PortalError(ok);
     await db.query("UPDATE companies SET milestones = milestones || jsonb_build_object($2::text, true) WHERE id = $1", [c.id, name]);
     await log(db, ws, c.id, def.action, {}, def.actor);
+    if (name === 'aop_signed' && !(c.contract_products || []).length) {
+      // The signed AOP carries the proposal's program price and the client's MEC.
+      const { rows: [job] } = await db.query('SELECT proposal FROM payroll_jobs WHERE company_id = $1 AND proposal IS NOT NULL ORDER BY id DESC LIMIT 1', [c.id]);
+      const contract = [{ code: 'VIRTUAL', price: job?.proposal?.programPrice || 149 }, { code: 'MEC', price: faker.helpers.arrayElement([55, 65]) }];
+      await db.query('UPDATE companies SET contract_products = $2 WHERE id = $1', [c.id, JSON.stringify(contract)]);
+    }
     if (name === 'census_link') {
       // The simulated client fills in the link right away.
       const rows = (await employeesOf(db, c.id)).map((e) => ({
@@ -165,12 +176,31 @@ export async function updateClient(ws, id, body) {
 
 const DOC_STATUSES = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation'];
 
+/** A new prospect signs up: a client at Welcome, with a payroll company and employees behind it. */
+export async function newClient(ws, { name, state = 'NY', payFrequency = 'biweekly', employees = 25, payrollProvider } = {}) {
+  if (!['NY', 'NJ', 'CA'].includes(state)) throw new PortalError('State must be NY, NJ or CA.');
+  const count = Math.min(Math.max(Number(employees) || 25, 5), 200);
+  return transaction(async (db) => {
+    const company = fakeCompany({ state, payFrequency });
+    if (name) company.name = name;
+    if (payrollProvider) company.payroll_provider = payrollProvider;
+    const c = await createCompany(db, ws, company, fakePeople(state, count));
+    await db.query(
+      `UPDATE companies SET onboarding_status = 'Welcome', portal_status = 'Onboarding', company_code = $2, pipedrive_deal_id = $3, contact = $4, milestones = '{}'
+       WHERE id = $1`,
+      [c.id, state, faker.string.numeric(5), { name: faker.person.fullName(), title: 'HR Manager', email: 'hr@example.com', phone: faker.phone.number({ style: 'national' }) }]);
+    await log(db, ws, c.id, 'Client signed up', { employees: count }, 'Client');
+    return { id: c.id, name: company.name };
+  });
+}
+
 /** The client uploads a payroll register; the reader extracts it into the Onboarding Queue. */
-export async function uploadPayrollDocs(ws, id, { csv, fileName = 'Payroll Register.csv' }) {
-  const source = registerFromCsv(csv);
-  if (source.length < 3) throw new PortalError('The register needs at least 3 employees.');
+export async function uploadPayrollDocs(ws, id, { csv, fileName = 'Payroll Register.csv', simulate = false }) {
   return transaction(async (db) => {
     const c = await getCompany(db, ws, id);
+    // "Simulate" stands in for a client who sends their latest register without being asked twice.
+    const source = simulate ? (await employeesOf(db, c.id)).map((e) => registerLine(e, c.pay_frequency)) : registerFromCsv(csv);
+    if (source.length < 3) throw new PortalError('The register needs at least 3 employees.');
     if (!DOC_STATUSES.includes(c.onboarding_status)) throw new PortalError(`${c.name} is past the payroll documents stage.`);
     // A new upload replaces any extraction still waiting for review.
     await db.query("DELETE FROM payroll_jobs WHERE company_id = $1 AND queue = 'review'", [c.id]);
