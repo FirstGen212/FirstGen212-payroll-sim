@@ -5,8 +5,14 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const view = $('#view');
 // Two apps share this code: the payroll system at / and the employer portal at /portal.
 const APP = document.body.dataset.app || 'payroll';
-const HOME = APP === 'portal' ? 'clients' : 'dashboard';
-const PORTAL_ROUTES = new Set(['clients', 'client', 'queue', 'csm', 'job', 'calculator', 'census', 'upload', 'activity']);
+// The portal has two audiences, as in the real one: the CS team and a client (employer) user.
+const portalAs = () => (APP === 'portal' ? localStorageGet(`portal-as-${state.ws}`) || 'cs' : null);
+const asClient = () => portalAs() && portalAs() !== 'cs';
+const HOME_OF = () => (APP !== 'portal' ? 'dashboard' : asClient() ? 'c-home' : 'home');
+const CS_ROUTES = ['home', 'roster', 'clients', 'client', 'master-census', 'terminated-employees', 'team-tasks', 'task', 'queue', 'csm', 'job', 'calculator',
+  'mock-payroll-run', 'activity', 'employee-status-roster', 'census', 'upload', 'monthly-review-block'];
+const CLIENT_ROUTES = ['c-home', 'c-roster', 'c-census', 'c-upload'];
+const PORTAL_ROUTES = new Set([...CS_ROUTES, ...CLIENT_ROUTES]);
 const SHARED_ROUTES = new Set(['assignments', 'admin']);
 
 /** Opens a page of the other app in its own tab, on the same sandbox (and company, for payroll). */
@@ -86,7 +92,7 @@ $('#reset-btn').addEventListener('click', async () => {
   await wsApi('/reset', { method: 'POST' });
   await loadCompanies();
   toast('Sandbox reset');
-  location.hash = `#/${HOME}`;
+  location.hash = `#/${HOME_OF()}`;
   route();
 });
 
@@ -113,15 +119,31 @@ const routes = {
   census: renderCensusInbox,
   upload: renderCensusUpload,
   activity: renderActivity,
+  home: renderOpsDashboard,
+  roster: renderCsRoster,
+  'master-census': renderMasterCensus,
+  'terminated-employees': renderStatusChanges,
+  'team-tasks': renderTeamTasks,
+  task: renderTask,
+  'mock-payroll-run': renderMockPage,
+  'employee-status-roster': renderStatusRoster,
+  'monthly-review-block': renderMonthlyReview,
+  'c-home': renderClientHome,
+  'c-roster': renderClientRoster,
+  'c-census': renderClientCensus,
+  'c-upload': renderClientUpload,
 };
-const NO_COMPANY_NEEDED = new Set(['assignments', 'admin', 'clients', 'client', 'queue', 'csm', 'job', 'calculator', 'census', 'upload', 'activity']);
-const NAV_PARENT = { employee: 'employees', run: 'payroll', paycheck: 'reports', client: 'clients', job: 'queue', calculator: 'csm', upload: 'census' };
+const NO_COMPANY_NEEDED = new Set(['assignments', 'admin', ...PORTAL_ROUTES]);
+const NAV_PARENT = { employee: 'employees', run: 'payroll', paycheck: 'reports', client: 'clients', job: 'queue', calculator: 'csm', upload: 'census', task: 'team-tasks' };
 
 async function route() {
-  let [name = HOME, ...params] = location.hash.replace(/^#\//, '').split('/');
+  let [name = HOME_OF(), ...params] = location.hash.replace(/^#\//, '').split('?')[0].split('/').map(decodeURIComponent);
   // Each app only shows its own pages; the other app's links open in its own tab.
-  const belongs = SHARED_ROUTES.has(name) || (APP === 'portal') === PORTAL_ROUTES.has(name);
-  if (!routes[name] || !belongs) { name = HOME; params = []; }
+  // In the portal, the CS and client views each have their own pages too.
+  const viewRoutes = APP !== 'portal' ? null : asClient() ? CLIENT_ROUTES : CS_ROUTES;
+  const belongs = SHARED_ROUTES.has(name) || ((APP === 'portal') === PORTAL_ROUTES.has(name) && (!viewRoutes || viewRoutes.includes(name)));
+  if (!routes[name] || !belongs) { name = HOME_OF(); params = []; }
+  if (APP === 'portal') { document.body.classList.toggle('as-client', asClient()); syncPortalAs(); }
   document.querySelectorAll('.sidenav a').forEach((a) => {
     const target = a.getAttribute('href').slice(2);
     a.classList.toggle('active', target === name || NAV_PARENT[name] === target);
@@ -872,7 +894,23 @@ function activityTable(rows) {
 }
 
 async function renderActivity() {
-  view.innerHTML = `<h1>Activity Log</h1>${activityTable(await portalApi('/activity'))}`;
+  const rows = await portalApi('/activity');
+  const uniq = (k) => [...new Set(rows.map((a) => a[k]).filter(Boolean))].sort();
+  view.innerHTML = `<h1>Activity Log</h1>
+    <div class="actions"><label>From <input type="date" id="al-from"></label><label>To <input type="date" id="al-to"></label>
+      <label>Company <select id="al-company"><option value="">All</option>${uniq('company').map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>
+      <label>Actor <select id="al-actor"><option value="">All</option>${uniq('actor').map((v) => `<option>${esc(v)}</option>`).join('')}</select></label>
+      <label>Action <select id="al-action"><option value="">All</option>${uniq('action').map((v) => `<option>${esc(v)}</option>`).join('')}</select></label></div>
+    <div id="al-out"></div>`;
+  const draw = () => {
+    const from = $('#al-from').value, to = $('#al-to').value, co = $('#al-company').value, actor = $('#al-actor').value, action = $('#al-action').value;
+    $('#al-out').innerHTML = activityTable(rows.filter((a) => {
+      const day = new Date(a.at).toISOString().slice(0, 10);
+      return (!from || day >= from) && (!to || day <= to) && (!co || a.company === co) && (!actor || a.actor === actor) && (!action || a.action === action);
+    }));
+  };
+  view.querySelectorAll('.actions input, .actions select').forEach((el) => el.addEventListener('change', draw));
+  draw();
 }
 
 function jobsTable(jobs, kind) {
@@ -1021,7 +1059,7 @@ async function openWorkspace(id, scenarioKey) {
   // Portal scenarios start in the portal; payroll ones in the payroll system.
   const app = scenarioKey?.startsWith('portal-') ? 'portal' : 'payroll';
   if (app !== APP) { openOtherApp(app, ''); return; }
-  location.hash = `#/${HOME}`;
+  location.hash = `#/${HOME_OF()}`;
   route();
 }
 
@@ -1194,3 +1232,416 @@ $('#logout-btn').addEventListener('click', async () => {
 api('/auth/status')
   .then(({ user, needsSetup }) => (user ? start(user) : showAuth(needsSetup)))
   .catch((err) => { view.innerHTML = `<p>Could not load: ${esc(err.message)}</p>`; });
+
+// ---------- portal: CS operations and the client view (from the Softr map) ----------
+
+const STATUS_CHIPS = ['Active', 'New hire', 'Underwriting', 'Unenrolled', 'Terminated', 'Opted out', 'On leave', 'Ineligible', 'Not in payroll', 'Inactive', 'DNU', 'No status'];
+const TASK_FLOWS = ['Census Confirmation', 'Eligibility Rerun Request', 'New Hire', 'Product Change', 'Terminate', 'Unenroll', 'On leave', 'Opt out'];
+const statusBadge = (s) => `<span class="badge ${/^Active/.test(s || '') ? 'finalized' : ['Terminated', 'Unenrolled', 'Opted out', 'Ineligible'].includes(s) ? 'warn' : 'mock'}">${esc(s || 'No status')}</span>`;
+const companyOptions = (selected, all = true) => `${all ? '<option value="">All companies</option>' : ''}${state.companies.map((c) => `<option value="${c.id}" ${String(c.id) === String(selected) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const csv = (rows) => rows.map((r) => r.map((v) => { const t = String(v ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\n');
+const csvLink = (name, rows, label = 'Export CSV') => `<a class="btn secondary" download="${name}.csv" href="data:text/csv,${encodeURIComponent(csv(rows))}">${label}</a>`;
+
+/** The "Viewing as" picker: the CS team, or one client company's HR user. */
+function syncPortalAs() {
+  const sel = $('#as-select');
+  if (!sel) return;
+  const current = portalAs();
+  sel.innerHTML = `<option value="cs">First Gen CS team</option>${state.companies.map((c) => `<option value="${c.id}">Client: ${esc(c.name)}</option>`).join('')}`;
+  sel.value = state.companies.some((c) => String(c.id) === current) ? current : 'cs';
+}
+$('#as-select')?.addEventListener('change', (ev) => {
+  localStorageSet(`portal-as-${state.ws}`, ev.target.value);
+  location.hash = `#/${HOME_OF()}`;
+  route();
+});
+const clientCompany = () => state.companies.find((c) => String(c.id) === portalAs());
+
+// ----- CS: Dashboard -----
+
+function taskCard(t) {
+  return `<div class="task-card"><div><span class="badge">${esc(t.company)}</span> <span class="badge mock">${esc(t.task_flow)}</span>
+      ${t.first_name ? `<strong>${esc(t.first_name)} ${esc(t.last_name)}</strong> <span class="muted">#${esc(t.employee_number)}</span>` : ''}
+      <div class="muted">${t.triggered_by ? `From ${esc(t.triggered_by)} · ` : ''}${ago(t.created_at)}${t.company_go_live ? ` · Go live ${t.company_go_live}` : ''}</div></div>
+    <a class="btn" href="#/task/${t.id}">${esc(t.action || 'Review')}</a></div>`;
+}
+
+async function renderOpsDashboard() {
+  const d = await portalApi('/dashboard');
+  const k = d.kpis;
+  view.innerHTML = `<h1>Dashboard</h1>
+    <div class="cards">
+      <div class="card"><div class="label">Active Companies</div><div class="value">${k.active_companies}</div></div>
+      <div class="card"><div class="label">Active Employees</div><div class="value">${k.active_employees}</div></div>
+      <div class="card"><div class="label">Pending Tasks</div><div class="value">${k.pending_tasks}</div></div>
+      <div class="card"><div class="label">Companies onboarding</div><div class="value">${k.onboarding_companies}</div></div>
+    </div>
+    <div class="two-col">
+      <div class="panel"><h2 style="margin-top:0">Pending Tasks</h2>${d.tasks.map(taskCard).join('') || '<p class="muted">No open tasks.</p>'}
+        <div class="actions"><a href="#/team-tasks">All team tasks →</a></div></div>
+      <div class="panel"><h2 style="margin-top:0">Monthly payroll uploads</h2>
+        ${d.uploads.length ? `<table><tr><th>Company</th><th>Month</th><th>Status</th></tr>${d.uploads.map((u) => `<tr><td>${esc(u.company)}</td><td>${u.month}</td><td>${esc(u.status)}</td></tr>`).join('')}</table>` : '<p class="muted">No uploads yet.</p>'}
+        <div class="actions"><a href="#/monthly-review-block">Monthly Review →</a></div></div>
+    </div>`;
+}
+
+// ----- CS: Team Tasks and one task -----
+
+async function renderTeamTasks(tab = 'Open') {
+  const status = tab === 'Resolved' ? 'Resolved' : 'Open';
+  const tasks = await portalApi(`/tasks?status=${status}`);
+  view.innerHTML = `<h1>Team Tasks</h1>
+    <div class="tabs"><a href="#/team-tasks/Open" class="${status === 'Open' ? 'active' : ''}">Open</a><a href="#/team-tasks/Resolved" class="${status === 'Resolved' ? 'active' : ''}">Resolved</a></div>
+    <div class="actions"><label>Company <select id="tt-company">${companyOptions('')}</select></label>
+      <label>Workflow <select id="tt-flow"><option value="">All workflows</option>${TASK_FLOWS.map((f) => `<option>${f}</option>`).join('')}</select></label>
+      ${csvLink('team-tasks', [['Company', 'Employee', 'Workflow', 'Status', 'Decision'], ...tasks.map((t) => [t.company, `${t.first_name || ''} ${t.last_name || ''}`, t.task_flow, t.status, t.decision || ''])], 'Export')}</div>
+    <div class="table-wrap"><table id="tt"><tr><th>Company</th><th>Employee</th><th>Workflow</th><th>Status</th><th>${status === 'Open' ? 'Action' : 'Decision'}</th></tr>
+      ${tasks.map((t) => `<tr data-company="${t.company_id}" data-flow="${esc(t.task_flow)}"><td>${esc(t.company)}</td><td>${t.first_name ? `${esc(t.first_name)} ${esc(t.last_name)} <span class="muted">#${esc(t.employee_number)}</span>` : '—'}</td>
+        <td>${esc(t.task_flow)}</td><td>${esc(t.status)}</td>
+        <td>${status === 'Open' ? `<a class="btn" href="#/task/${t.id}">${esc(t.action)}</a>` : `${esc(t.decision || '')} <span class="muted">${esc(t.decided_by || '')}</span>`}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nothing here.</td></tr>'}
+    </table></div>`;
+  const filter = () => {
+    const c = $('#tt-company').value, f = $('#tt-flow').value;
+    view.querySelectorAll('#tt tr[data-company]').forEach((tr) => { tr.style.display = (!c || tr.dataset.company === c) && (!f || tr.dataset.flow === f) ? '' : 'none'; });
+  };
+  $('#tt-company').addEventListener('change', filter);
+  $('#tt-flow').addEventListener('change', filter);
+}
+
+function previewBlock(p) {
+  return `<div><strong>${p.eligible ? 'Eligible' : esc(p.label)}</strong> · allotment ${dollars(p.monthlyAllotment)}/mo · status ${esc(p.status)}<br>
+    <span class="muted">Products: ${Object.entries(p.products).map(([k, v]) => `${k} $${v}`).join(', ') || 'none'}</span></div>`;
+}
+
+async function renderTask(id) {
+  const { task: t, employee: e, company: c, preview } = await portalApi(`/tasks/${id}`);
+  const p = t.payload || {};
+  const rows = [];
+  if (e) rows.push(['Employee', `${esc(e.first_name)} ${esc(e.last_name)} #${esc(e.employee_number)} · ${statusBadge(e.census_status)}${e.pending_status_change ? ` → pending ${esc(e.pending_status_change)}` : ''}`]);
+  if (p.effectiveDate) rows.push(['Effective date', esc(p.effectiveDate)]);
+  if (p.reason) rows.push(['Reason', esc(p.reason)]);
+  if (p.drop) rows.push(['Drop products', esc(p.drop.join(', '))]);
+  if (e) rows.push(['Current products', esc(Object.entries(e.products || {}).map(([k, v]) => `${k} $${v}`).join(', ') || 'none')]);
+  let body = '';
+  if (t.task_flow === 'Eligibility Rerun Request' && preview) {
+    const v = p.newValues || {};
+    const gross = e.pay_type === 'salary' ? Number(e.pay_rate) : Math.round(Number(e.pay_rate) * Number(e.standard_hours) * 52);
+    body = `<table><tr><th>Field</th><th>Current</th><th>Requested</th></tr>
+      <tr><td>Gross annual</td><td>${dollars(gross)}</td><td>${v.gross_annual ? dollars(v.gross_annual) : '—'}</td></tr>
+      <tr><td>Avg hours / week</td><td>${e.standard_hours}</td><td>${v.avg_hours_per_week ?? '—'}</td></tr>
+      <tr><td>Filing status</td><td>${esc(e.w4.filingStatus)}</td><td>${esc(v.filing_status || '—')}</td></tr>
+      <tr><td>Dependents</td><td>${Math.round((e.w4.dependentsCredit || 0) / 2200)}</td><td>${v.dependents ?? '—'}</td></tr></table>
+      <div class="two-col" style="margin-top:12px"><div class="panel"><h3 style="margin-top:0">Before</h3>${previewBlock(preview.before)}</div><div class="panel"><h3 style="margin-top:0">After the rerun</h3>${previewBlock(preview.after)}</div></div>`;
+  } else if (t.task_flow === 'New Hire' && preview) {
+    const gross = e.pay_type === 'salary' ? Number(e.pay_rate) : Math.round(Number(e.pay_rate) * Number(e.standard_hours) * 52);
+    body = `<p>Start date ${e.hire_date || '—'} · ${e.employment_type} · ${dollars(gross)}/yr · ${e.standard_hours} hrs/wk · filing ${esc(e.w4.filingStatus)}</p>
+      <div class="panel"><h3 style="margin-top:0">Pricing preview</h3>${previewBlock(preview)}
+      ${(c.products || []).length ? '' : '<div class="blocked">This client has no products tagged yet.</div>'}</div>`;
+  } else if (t.task_flow === 'Census Confirmation') {
+    body = `<p>Confirm once the census upload is reconciled in <a href="#/census">Census Review</a>.</p>`;
+  }
+  const approveLabel = { 'Review & Price': 'Price & activate', 'Review & Decide': 'Approve', 'Review & Apply': 'Apply' }[t.action] || 'Approve';
+  view.innerHTML = `<div class="actions"><a href="#/team-tasks">← Team Tasks</a></div>
+    <h1>${esc(t.task_flow)} <span class="badge">${esc(t.status)}</span></h1>
+    <div class="panel"><p><strong><a href="#/client/${c.id}">${esc(c.name)}</a></strong> · ${FREQ_LABEL[c.pay_frequency]} · requested by ${esc(t.triggered_by || '—')} ${ago(t.created_at)}</p>
+      <table>${rows.map(([k, v]) => `<tr><th style="width:180px">${k}</th><td>${v}</td></tr>`).join('')}</table>
+      ${body}
+      ${t.status === 'Open' ? `<label style="margin-top:12px">Note (optional)<input id="task-note" placeholder="e.g. client emailed"></label>
+        <div class="actions"><button id="approve">${approveLabel}</button><button class="secondary" id="reject">Reject</button></div>`
+        : `<div class="ok-banner">${esc(t.decision || '')} · ${esc(t.decided_by || '')}${t.notes ? ` · ${esc(t.notes)}` : ''}</div>`}</div>`;
+  const decide = (decision) => act(() => portalApi(`/tasks/${id}/decide`, { method: 'POST', body: { decision, note: $('#task-note').value } }))
+    .then((r) => { toast(r.summary); renderTask(id); });
+  $('#approve')?.addEventListener('click', () => decide('approve'));
+  $('#reject')?.addEventListener('click', () => decide('reject'));
+}
+
+// ----- CS: rosters and status reports -----
+
+async function renderMasterCensus() {
+  const rows = await portalApi('/master-census');
+  view.innerHTML = `<h1>Master Census</h1>
+    <div class="actions"><label>Company <select id="mc-company">${companyOptions('')}</select></label>
+      <label>Status <select id="mc-status"><option value="">All statuses</option>${STATUS_CHIPS.map((s) => `<option>${s}</option>`).join('')}</select></label>
+      <input id="mc-search" placeholder="Search name or ID">
+      ${csvLink('master-census', [['Company', 'Employee ID', 'First', 'Last', 'Status', 'FT/PT', 'Products', 'Go live'], ...rows.map((r) => [r.company, r.employee_number, r.first_name, r.last_name, r.census_status, r.employment_type, Object.keys(r.products || {}).join(' '), r.go_live_date])])}</div>
+    <div class="table-wrap"><table id="mc"><tr><th>Company</th><th>Employee ID</th><th>Name</th><th>Status</th><th>FT/PT</th><th>Location</th><th>Products</th><th>Go live</th><th>Eligibility</th></tr>
+      ${rows.map((r) => `<tr class="clickable" data-company="${r.company_id}" data-status="${esc(/^Active/.test(r.census_status || '') ? 'Active' : r.census_status || 'No status')}" data-text="${esc(`${r.first_name} ${r.last_name} ${r.employee_number}`.toLowerCase())}"
+        onclick="openOtherApp('payroll', '#/employee/${r.id}', ${r.company_id})"><td>${esc(r.company)}</td><td>${esc(r.employee_number)}</td><td>${esc(r.last_name)}, ${esc(r.first_name)}</td>
+        <td>${statusBadge(r.census_status)}${r.pending_status_change ? ` <span class="muted">→ ${esc(r.pending_status_change)}</span>` : ''}</td><td>${r.employment_type}</td><td>${esc(r.location_code || '')}</td>
+        <td>${Object.entries(r.products || {}).map(([k, v]) => `${k} $${v}`).join(', ')}</td><td>${r.go_live_date || ''}</td><td class="muted">${esc(r.eligibility || '')}</td></tr>`).join('')}
+    </table></div>`;
+  const filter = () => {
+    const c = $('#mc-company').value, st = $('#mc-status').value, q = $('#mc-search').value.toLowerCase();
+    view.querySelectorAll('#mc tr[data-company]').forEach((tr) => {
+      tr.style.display = (!c || tr.dataset.company === c) && (!st || tr.dataset.status === st) && (!q || tr.dataset.text.includes(q)) ? '' : 'none';
+    });
+  };
+  ['#mc-company', '#mc-status'].forEach((s) => $(s).addEventListener('change', filter));
+  $('#mc-search').addEventListener('input', filter);
+}
+
+async function renderStatusRoster() {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const asOf = params.get('asOf') || todayIso();
+  const company = params.get('company') || '';
+  const rows = await portalApi(`/status-roster?asOf=${asOf}${company ? `&company=${company}` : ''}`);
+  const counts = Object.fromEntries(STATUS_CHIPS.map((s) => [s, rows.filter((r) => r.status === s).length]));
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  view.innerHTML = `<h1>Employee Status Change</h1><p class="muted">Roster as of a date, built from the status change log.</p>
+    <div class="actions"><label>As of <input type="date" id="sr-date" value="${asOf}"></label>
+      <button class="secondary sr-quick" data-d="${todayIso()}">Today</button><button class="secondary sr-quick" data-d="${daysAgo(7)}">7d</button><button class="secondary sr-quick" data-d="${daysAgo(30)}">30d</button>
+      <label>Company <select id="sr-company">${companyOptions(company)}</select></label><input id="sr-search" placeholder="Search name">
+      ${csvLink(`status-roster-${asOf}`, [['Employee', 'Company', 'Status'], ...rows.map((r) => [`${r.first_name} ${r.last_name}`, r.company, r.status])])}</div>
+    <div class="chips">${STATUS_CHIPS.map((s) => `<button class="chip" data-s="${s}">${s} <strong>${counts[s]}</strong></button>`).join('')}</div>
+    <div class="table-wrap"><table id="sr"><tr><th>Employee</th><th>Company</th><th>Status</th></tr>
+      ${rows.map((r) => `<tr data-s="${esc(r.status)}" data-text="${esc(`${r.first_name} ${r.last_name}`.toLowerCase())}"><td>${esc(r.first_name)} ${esc(r.last_name)} <span class="muted">#${esc(r.employee_number)}</span></td><td>${esc(r.company)}</td><td>${statusBadge(r.status)}</td></tr>`).join('')}
+    </table></div>`;
+  const go = (d, c) => { location.hash = `#/employee-status-roster?asOf=${d}${c ? `&company=${c}` : ''}`; };
+  $('#sr-date').addEventListener('change', (ev) => go(ev.target.value, $('#sr-company').value));
+  $('#sr-company').addEventListener('change', (ev) => go($('#sr-date').value, ev.target.value));
+  view.querySelectorAll('.sr-quick').forEach((b) => b.addEventListener('click', () => go(b.dataset.d, $('#sr-company').value)));
+  let chip = '';
+  const filter = () => {
+    const q = $('#sr-search').value.toLowerCase();
+    view.querySelectorAll('#sr tr[data-s]').forEach((tr) => { tr.style.display = (!chip || tr.dataset.s === chip) && (!q || tr.dataset.text.includes(q)) ? '' : 'none'; });
+    view.querySelectorAll('.chip').forEach((b) => b.classList.toggle('active', b.dataset.s === chip));
+  };
+  view.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => { chip = chip === b.dataset.s ? '' : b.dataset.s; filter(); }));
+  $('#sr-search').addEventListener('input', filter);
+}
+
+async function renderStatusChanges() {
+  const rows = await portalApi('/status-changes');
+  view.innerHTML = `<h1>Terminated Employees</h1><p class="muted">Status &amp; product changes: every change from the status log, newest first.</p>
+    <div class="actions"><label>Company <select id="sc-company">${companyOptions('')}</select></label>
+      <label>Status <select id="sc-status"><option value="">All</option>${STATUS_CHIPS.map((s) => `<option>${s}</option>`).join('')}</select></label>
+      ${csvLink('status-changes', [['Employee ID', 'Location', 'Name', 'Company', 'From', 'To', 'Effective', 'Reason', 'By'], ...rows.map((r) => [r.employee_number, r.location_code, `${r.first_name} ${r.last_name}`, r.company, r.from_status, r.to_status, r.effective_date, r.reason, r.actor])])}</div>
+    <div class="table-wrap"><table id="sc"><tr><th>Employee ID</th><th>Location</th><th>Name</th><th>Company</th><th>Status</th><th>Status date</th><th>Products after</th><th>Notes</th><th>By</th></tr>
+      ${rows.map((r) => `<tr data-company="${esc(r.company)}" data-s="${esc(/^Active/.test(r.to_status) ? 'Active' : r.to_status)}"><td>${esc(r.employee_number)}</td><td>${esc(r.location_code || '')}</td><td>${esc(r.first_name)} ${esc(r.last_name)}</td><td>${esc(r.company)}</td>
+        <td>${r.from_status ? `${esc(r.from_status)} → ` : ''}${statusBadge(r.to_status)}</td><td>${r.effective_date}</td>
+        <td>${r.products ? esc(Object.keys(r.products).join(', ') || 'none') : '<span class="muted">unchanged</span>'}</td><td class="muted">${esc(r.reason || '')}</td><td>${esc(r.actor || '')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No changes yet.</td></tr>'}
+    </table></div>`;
+  const filter = () => {
+    const c = $('#sc-company').selectedOptions[0]?.textContent, cv = $('#sc-company').value, st = $('#sc-status').value;
+    view.querySelectorAll('#sc tr[data-s]').forEach((tr) => { tr.style.display = (!cv || tr.dataset.company === c) && (!st || tr.dataset.s === st) ? '' : 'none'; });
+  };
+  $('#sc-company').addEventListener('change', filter);
+  $('#sc-status').addEventListener('change', filter);
+}
+
+/** Employee roster with the Deductions & Reimbursements table; shared by the CS and client views. */
+async function rosterView(companyId, { client }) {
+  const [detail, ded] = await Promise.all([portalApi(`/clients/${companyId}`), portalApi(`/clients/${companyId}/deductions`)]);
+  const c = detail.company;
+  const byId = Object.fromEntries(ded.map((d) => [d.employeeId, d]));
+  const leaver = (e) => ['Terminated', 'Unenrolled', 'Opted out'].includes(e.census_status);
+  const actions = (e) => (leaver(e) || e.pending_status_change ? '' : `<select class="req" data-id="${e.id}"><option value="">Status change…</option>
+      <option>Terminate</option><option>Unenroll</option><option>On leave</option><option value="Eligibility Rerun Request">Eligibility rerun</option>${Object.keys(e.products || {}).length ? '<option>Product Change</option>' : ''}</select>`);
+  const live = detail.employees.filter((e) => !leaver(e));
+  return { c, html: `
+    <div class="panel"><h2 style="margin-top:0">Your Team <span class="muted">${live.length} people</span></h2>
+      <div class="actions">${client ? '<button id="add-hire">Add New Employee</button>' : ''}
+        ${csvLink(`roster-${c.company_code || c.id}`, [['Status', 'Pay Cycle', 'First Name', 'Last Name', 'Email', 'City', 'State', 'Phone', 'SSN', 'Job Title', 'Hire Date', 'Go Live Date'], ...detail.employees.map((e) => [e.census_status, FREQ_LABEL[c.pay_frequency], e.first_name, e.last_name, e.email, e.address?.city, e.address?.state, e.phone, maskSsn(e.ssn), e.job_title, e.hire_date, e.go_live_date])], 'Export')}</div>
+      <div id="hire-form"></div>
+      <div class="table-wrap"><table><tr><th>Status</th><th>Pay Cycle</th><th>Name</th><th>Email</th><th>Gender</th><th>City</th><th>Phone#</th><th>SSN</th><th>Job Title</th><th>Hire Date</th><th>Go Live Date</th><th>Status Change</th></tr>
+        ${detail.employees.map((e) => `<tr><td>${statusBadge(e.census_status)}${e.pending_status_change ? `<div class="muted">pending ${esc(e.pending_status_change)}</div>` : ''}</td><td>${FREQ_LABEL[c.pay_frequency]}</td>
+          <td>${esc(e.first_name)} ${esc(e.last_name)}</td><td>${esc(e.email || '')}</td><td>${esc(e.gender || '')}</td><td>${esc(e.address?.city || '')}</td><td>${esc(e.phone || '')}</td><td>${maskSsn(e.ssn)}</td>
+          <td>${esc(e.job_title || '')}</td><td>${e.hire_date || ''}</td><td>${e.go_live_date || ''}</td><td>${client ? actions(e) : ''}</td></tr>
+          <tr class="req-row" id="req-${e.id}" hidden><td colspan="12"></td></tr>`).join('')}
+      </table></div></div>
+    <div class="panel"><h2 style="margin-top:0">Deductions &amp; Reimbursements <span class="muted">per paycheck</span></h2>
+      <p class="muted">Pre-Tax Well is the FGH/FGPT plan deduction, WIMPER the BPT benefits payment back, Post-Tax Well the RWP products.</p>
+      <div class="table-wrap"><table><tr><th>Status</th><th>Name</th><th>Products</th><th class="num">Pre-Tax Well</th><th class="num">WIMPER</th><th class="num">Post-Tax Well</th></tr>
+        ${ded.filter((d) => d.products.length).map((d) => `<tr><td>${statusBadge(d.status)}</td><td>${esc(d.name)}</td><td>${esc(d.products.join(', '))}</td>
+          <td class="num">${dollars(d.preTaxWell)}</td><td class="num">${dollars(d.wimper)}</td><td class="num">${dollars(d.postTaxWell)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nobody is priced yet.</td></tr>'}
+      </table></div></div>`, byId, detail };
+}
+
+function wireClientRoster(companyId, detail, rerender) {
+  view.querySelectorAll('.req').forEach((sel) => sel.addEventListener('change', () => {
+    const flow = sel.value;
+    const e = detail.employees.find((x) => String(x.id) === sel.dataset.id);
+    const row = $(`#req-${e.id}`);
+    if (!flow) { row.hidden = true; return; }
+    row.hidden = false;
+    const cell = row.firstElementChild;
+    const gross = e.pay_type === 'salary' ? Number(e.pay_rate) : Math.round(Number(e.pay_rate) * Number(e.standard_hours) * 52);
+    cell.innerHTML = `<form class="form-grid req-form"><strong style="grid-column:1/-1">${flow === 'Eligibility Rerun Request' ? 'Eligibility rerun' : flow} · ${esc(e.first_name)} ${esc(e.last_name)}</strong>
+      ${['Terminate', 'Unenroll', 'On leave', 'Opt out'].includes(flow) ? `<label>Effective date<input type="date" name="effectiveDate" required value="${todayIso()}"></label>` : ''}
+      ${flow === 'Eligibility Rerun Request' ? `<label>New gross annual<input type="number" name="gross_annual" value="${gross}"></label><label>Avg hours / week<input type="number" name="avg_hours_per_week" value="${e.standard_hours}"></label>
+        <label>Filing status<select name="filing_status">${['single', 'married', 'head'].map((f) => `<option ${e.w4.filingStatus === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>
+        <label>Dependents<input type="number" name="dependents" value="${Math.round((e.w4.dependentsCredit || 0) / 2200)}"></label>` : ''}
+      ${flow === 'Product Change' ? Object.keys(e.products || {}).map((k) => `<label><input type="checkbox" name="drop" value="${k}"> Drop ${PRODUCT_LABEL[k] || k}</label>`).join('') : ''}
+      <label>Reason<input name="reason" placeholder="${flow === 'On leave' ? 'e.g. medical leave' : 'Optional'}"></label>
+      <div class="actions"><button type="submit">Submit request</button><button type="button" class="secondary cancel">Cancel</button></div></form>`;
+    $('.cancel', cell).addEventListener('click', () => { row.hidden = true; sel.value = ''; });
+    $('form', cell).addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const body = { flow, employeeId: e.id, effectiveDate: f.get('effectiveDate'), reason: f.get('reason') };
+      if (flow === 'Eligibility Rerun Request') body.newValues = { gross_annual: Number(f.get('gross_annual')), avg_hours_per_week: Number(f.get('avg_hours_per_week')), filing_status: f.get('filing_status'), dependents: Number(f.get('dependents')) };
+      if (flow === 'Product Change') body.drop = f.getAll('drop');
+      act(() => portalApi(`/clients/${companyId}/requests`, { method: 'POST', body }), 'Request sent to First Gen').then(rerender);
+    });
+  }));
+  $('#add-hire')?.addEventListener('click', () => {
+    $('#hire-form').innerHTML = `<form id="hire" class="panel form-grid"><strong style="grid-column:1/-1">Add New Employee</strong>
+      <label>First name<input name="first_name" required></label><label>Last name<input name="last_name" required></label>
+      <label>Date of birth<input type="date" name="birth_date" required></label><label>Gender<select name="gender"><option>M</option><option>F</option></select></label>
+      <label>SSN<input name="ssn" placeholder="123-45-6789"></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label>
+      <label>Address<input name="address"></label><label>City<input name="city"></label><label>ZIP<input name="zip"></label>
+      <label>Job title<input name="job_title"></label><label>Start date<input type="date" name="hire_date" value="${todayIso()}"></label>
+      <label>Gross annual earnings<input type="number" name="gross_annual" required></label><label>Avg hours / week<input type="number" name="avg_hours_per_week" value="40"></label>
+      <label>Pay type<select name="pay_type"><option value="hourly">Hourly</option><option value="salary">Salary</option></select></label>
+      <label>Filing status<select name="filing_status"><option>single</option><option>married</option><option>head</option></select></label><label>Dependents<input type="number" name="dependents" value="0"></label>
+      <div class="actions"><button type="submit">Submit new hire</button></div></form>`;
+    $('#hire').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      act(() => portalApi(`/clients/${companyId}/new-hire`, { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) }), 'New hire sent to First Gen for pricing').then(rerender);
+    });
+  });
+}
+
+async function renderCsRoster(companyId) {
+  const live = state.companies.filter((c) => c.id);
+  const id = Number(companyId) || live[0]?.id;
+  const { c, html } = await rosterView(id, { client: false });
+  view.innerHTML = `<h1>Employee Roster</h1><div class="actions"><label>Company <select id="r-company">${companyOptions(id, false)}</select></label>
+    <a href="#/client/${c.id}">Open ${esc(c.name)} →</a></div>${html}`;
+  $('#r-company').addEventListener('change', (ev) => { location.hash = `#/roster/${ev.target.value}`; });
+}
+
+// ----- CS: Mock Payroll Diagnosis (standalone) and Monthly Review -----
+
+async function renderMockPage(companyId) {
+  const id = Number(companyId) || state.companies[0]?.id;
+  view.innerHTML = `<h1>Mock Payroll – Reverse Run</h1>
+    <div class="panel"><div class="actions"><label>Company <select id="mp-company">${companyOptions(id, false)}</select></label>
+      <label>Severity <select id="mp-preset"><option value="standard">Standard (REMOVE ≤ -$50)</option><option value="forward">Forward (REMOVE ≤ -$15)</option></select></label>
+      <label>BPT as <select id="mp-bpt"><option value="negativeDeduction">Negative deduction</option><option value="reimbursement">Reimbursement</option></select></label>
+      <button id="mp-run">Run analysis</button></div>
+      <p class="muted">Runs every priced employee through three pay periods (normal, short and overtime) with and without the program. Fix results on the client's Pricing &amp; Launch tab.</p></div>
+    <div id="mp-out"></div>`;
+  $('#mp-company').addEventListener('change', (ev) => { location.hash = `#/mock-payroll-run/${ev.target.value}`; });
+  $('#mp-run').addEventListener('click', async () => {
+    const r = await act(() => portalApi(`/clients/${$('#mp-company').value}/mock-diagnosis?preset=${$('#mp-preset').value}&bptMode=${$('#mp-bpt').value}`));
+    const count = (s) => r.results.filter((x) => x.status === s).length;
+    $('#mp-out').innerHTML = `<div class="cards">${['OK', 'BUFFER', 'ADJUST', 'REMOVE'].map((s) => `<div class="card"><div class="label">${s}</div><div class="value">${count(s)}</div></div>`).join('')}</div>
+      <div class="table-wrap"><table><tr><th>Employee</th><th class="num">Worst net change</th><th>Per period</th><th>Result</th><th>Break-even</th></tr>
+      ${r.results.map((x) => `<tr><td>#${esc(x.employeeNumber)} ${esc(x.name)}</td><td class="num">${dollars(x.worstDelta)}</td><td class="muted">${x.deltas.map(dollars).join(' / ')}</td>
+        <td>${statusBadge(x.status === 'OK' ? 'Active' : x.status)}</td><td>${x.breakEven ? `Drop ${x.breakEven.drop.join(', ')}` : ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nobody is priced for this client.</td></tr>'}</table></div>
+      <div class="actions"><a class="btn secondary" href="#/client/${$('#mp-company').value}/launch">Fix on Pricing &amp; Launch →</a></div>`;
+  });
+}
+
+async function renderMonthlyReview(tab = 'All') {
+  const uploads = await portalApi(`/monthly-uploads${tab !== 'All' ? `?status=${encodeURIComponent(tab)}` : ''}`);
+  const tabs = ['All', 'Ready', 'Processing', 'Failed', 'Needs a fix', 'Reviewed'];
+  view.innerHTML = `<h1>Monthly Review Block</h1><p class="muted">Payroll registers live clients sent for last month. A Ready upload becomes that client's monthly reconciliation.</p>
+    <div class="tabs">${tabs.map((t) => `<a href="#/monthly-review-block/${encodeURIComponent(t)}" class="${t === tab ? 'active' : ''}">${t}</a>`).join('')}</div>
+    <div class="table-wrap"><table><tr><th>Company</th><th>Payroll month</th><th>File</th><th class="num">Employees</th><th>Status</th><th>Sent by</th><th>When</th><th></th></tr>
+      ${uploads.map((u) => `<tr><td>${esc(u.company)}</td><td>${u.month}</td><td>${esc(u.file_name || '')}</td><td class="num">${u.employees}</td><td>${esc(u.status)}${u.problems.length ? `<div class="muted">${esc(u.problems.slice(0, 3).join(' '))}</div>` : ''}</td>
+        <td>${esc(u.uploaded_by || '')}</td><td>${ago(u.created_at)}</td>
+        <td>${u.status === 'Ready' ? `<a class="btn" href="#/client/${u.company_id}/recon">Reconcile</a> <button class="secondary mr" data-id="${u.id}">Mark reviewed</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No uploads.</td></tr>'}
+    </table></div>`;
+  view.querySelectorAll('.mr').forEach((b) => b.addEventListener('click', () => act(() => portalApi(`/monthly-uploads/${b.dataset.id}/reviewed`, { method: 'POST' }), 'Marked reviewed').then(() => renderMonthlyReview(tab))));
+}
+
+// ----- Client view -----
+
+const TOS_ARTICLES = ['Definitions', 'Portal access', 'HIPAA and data governance', 'Security', 'Confidentiality', 'Client responsibilities', 'Disclaimers', 'Indemnification', 'Term', 'Intellectual property', 'General'];
+
+async function renderClientHome() {
+  const co = clientCompany();
+  if (!co) { location.hash = '#/home'; return; }
+  const d = await portalApi(`/clients/${co.id}`);
+  const c = d.company, m = c.milestones || {};
+  if (c.onboarding_status === 'Completed') {
+    const ded = await portalApi(`/clients/${c.id}/deductions`);
+    const tasks = await portalApi(`/tasks?status=Open&company=${c.id}`);
+    view.innerHTML = `<h1>Welcome back, ${esc(c.contact?.name?.split(' ')[0] || 'there')}</h1>
+      <div class="cards"><div class="card"><div class="label">Enrolled employees</div><div class="value">${ded.filter((x) => x.products.length).length}</div></div>
+        <div class="card"><div class="label">Requests with First Gen</div><div class="value">${tasks.length}</div></div>
+        <div class="card"><div class="label">Go Live Date</div><div class="value">${c.go_live_date || '—'}</div></div></div>
+      <div class="panel"><h2 style="margin-top:0">Request Status</h2>${tasks.length ? `<table><tr><th>Request</th><th>Employee</th><th>Sent</th></tr>${tasks.map((t) => `<tr><td>${esc(t.task_flow)}</td><td>${esc(t.first_name || '')} ${esc(t.last_name || '')}</td><td>${ago(t.created_at)}</td></tr>`).join('')}</table>` : '<p class="muted">No open requests.</p>'}
+        <div class="actions"><a class="btn" href="#/c-roster">Go to your roster</a><a class="btn secondary" href="#/c-upload">Send last month's payroll</a></div></div>`;
+    return;
+  }
+  const step = (done, title, body) => `<div class="panel onboarding-step ${done ? 'done' : ''}"><h2 style="margin-top:0">${done ? '✅' : '⬜'} ${title}</h2>${done ? '' : body}</div>`;
+  const tos = `<details><summary>Read the Terms of Service (Articles I–XI)</summary><ol>${TOS_ARTICLES.map((a) => `<li>${a}</li>`).join('')}</ol><p class="muted">Training copy: article titles only.</p></details>
+    <div class="actions"><button id="tos">I accept the Terms of Service</button></div>`;
+  const el = `<form id="el" class="form-grid"><p style="grid-column:1/-1" class="muted">Engagement Letter, Articles I–VII. Sign as the client.</p>
+    <label>By<input name="by" required></label><label>Printed name<input name="printed_name" required></label><label>Title<input name="title" required></label>
+    <label>City<input name="city" required></label><label>State<input name="state" required value="${c.state}"></label><label>Zip<input name="zip" required></label>
+    <label style="grid-column:1/-1"><input type="checkbox" name="agree" value="1" required> I have read the Terms &amp; Conditions</label>
+    <div class="actions"><button type="submit">Sign engagement letter</button></div></form>`;
+  const docs = `<form id="c-docs"><div class="form-grid"><label>Payroll frequency<select name="freq">${['Weekly', 'Bi-Weekly', 'Semi-Monthly', 'Monthly', 'More Than 1'].map((f) => `<option>${f}</option>`).join('')}</select></label>
+      <label>Payroll register (CSV)<input type="file" name="file" accept=".csv,text/csv"></label></div>
+    <p class="muted">Submit your most recent payroll register. Export it from your payroll system (Reports → Check register → Export register).
+      <a href="#" onclick="openOtherApp('payroll', '#/reports', ${c.id}); return false">Open the payroll system ↗</a></p>
+    <div class="actions"><button type="submit">Upload payroll documents</button><button type="button" class="secondary" id="c-docs-sim">Send our latest register (simulate)</button></div></form>`;
+  const aop = m.aop_sent ? `<p>Your Account Opening Paperwork is ready to sign.</p><div class="actions"><button id="c-aop">Review &amp; sign AOP</button></div>` : '<p class="muted">First Gen will send your AOP after reviewing your proposal.</p>';
+  const census = m.census_link ? `<p>Fill in your employee census.</p><div class="actions"><a class="btn" href="#/c-census">Open Employee Census</a></div>` : '<p class="muted">Your census link arrives with the AOP.</p>';
+  view.innerHTML = `<h1>Get Started</h1><p class="muted">${esc(c.name)} · step ${d.stepper.step} of 7 · ${esc(c.onboarding_status)}</p>
+    ${step(m.tos_accepted, 'Accept the Terms of Service', tos)}
+    ${step(m.engagement_letter_signed, 'Sign the engagement letter', m.tos_accepted ? el : '<p class="muted">Accept the Terms of Service first.</p>')}
+    ${step(!!d.job, 'Upload payroll documents', m.engagement_letter_signed ? docs : '<p class="muted">Sign the engagement letter first.</p>')}
+    ${step(m.aop_signed, 'Sign your Account Opening Paperwork (AOP)', aop)}
+    ${step(m.census_reconciled, 'Submit your employee census', census)}`;
+  const reload = () => renderClientHome();
+  $('#tos')?.addEventListener('click', () => act(() => portalApi(`/clients/${c.id}/tos`, { method: 'POST' }), 'Terms accepted').then(reload));
+  $('#el')?.addEventListener('submit', (ev) => { ev.preventDefault(); act(() => portalApi(`/clients/${c.id}/engagement-letter`, { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) }), 'Engagement letter signed').then(reload); });
+  $('#c-docs')?.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const file = ev.target.file.files[0];
+    if (!file) { toast('Choose your payroll register file, or use simulate.'); return; }
+    await act(async () => portalApi(`/clients/${c.id}/payroll-docs`, { method: 'POST', body: { csv: await file.text(), fileName: file.name } }), 'Payroll documents submitted');
+    reload();
+  });
+  $('#c-docs-sim')?.addEventListener('click', () => act(() => portalApi(`/clients/${c.id}/payroll-docs`, { method: 'POST', body: { simulate: true } }), 'Payroll documents submitted').then(reload));
+  $('#c-aop')?.addEventListener('click', () => act(() => portalApi(`/clients/${c.id}/milestones/aop_signed`, { method: 'POST' }), 'AOP signed').then(reload));
+}
+
+async function renderClientRoster() {
+  const co = clientCompany();
+  const { c, html, detail } = await rosterView(co.id, { client: true });
+  view.innerHTML = `<h1>Roster</h1><p class="muted">${esc(c.name)}. Status changes and new hires go to First Gen as requests.</p>${html}`;
+  wireClientRoster(co.id, detail, renderClientRoster);
+}
+
+async function renderClientCensus() {
+  const co = clientCompany();
+  const d = await portalApi(`/clients/${co.id}`);
+  const uploads = (await portalApi('/census-uploads')).filter((u) => u.company_id === co.id);
+  view.innerHTML = `<h1>Employee Census</h1>
+    <div class="panel"><p>${d.census.pct}% of your census is complete (${d.census.complete ?? ''}${d.census.complete != null ? ' people with every required field' : ''}).</p>
+      ${d.company.milestones?.census_link ? `<p class="muted">Your census submission: ${uploads.length ? `${esc(uploads[0].status)} ${ago(uploads[0].created_at)}` : 'not sent yet'}.</p>` : '<p class="muted">First Gen sends your census link with the AOP.</p>'}</div>
+    <div class="table-wrap"><table><tr><th>Name</th><th>Email</th><th>Employee Status</th><th>Job Title</th></tr>
+      ${d.employees.map((e) => `<tr><td>${esc(e.first_name)} ${esc(e.last_name)}</td><td>${esc(e.email || '')}</td><td>${statusBadge(e.census_status)}</td><td>${esc(e.job_title || '')}</td></tr>`).join('')}</table></div>`;
+}
+
+async function renderClientUpload() {
+  const co = clientCompany();
+  const d = await portalApi(`/clients/${co.id}`);
+  if (d.company.onboarding_status !== 'Completed') { location.hash = '#/c-home'; return; }
+  const uploads = await portalApi(`/monthly-uploads?company=${co.id}`);
+  const months = Array.from({ length: 13 }, (_, i) => { const t = new Date(); t.setUTCDate(1); t.setUTCMonth(t.getUTCMonth() - 1 - i); return t.toISOString().slice(0, 7); });
+  view.innerHTML = `<h1>Send us last month's payroll</h1>
+    <form id="mu" class="panel"><div class="form-grid"><label>Payroll month<select name="month">${months.map((m) => `<option>${m}</option>`).join('')}</select></label>
+      <label>Payroll register files (CSV)<input type="file" name="file" accept=".csv,text/csv"></label></div>
+      <div class="actions"><button type="submit">Send payroll</button><button type="button" class="secondary" id="mu-sim">Send our register (simulate)</button>
+        <a href="#" onclick="openOtherApp('payroll', '#/reports', ${co.id}); return false">Open the payroll system ↗</a></div></form>
+    <h2>Recent uploads</h2><div class="table-wrap"><table><tr><th>Month</th><th>File</th><th>Status</th><th>Sent</th></tr>
+      ${uploads.map((u) => `<tr><td>${u.month}</td><td>${esc(u.file_name || '')}</td><td>${esc(u.status)}${u.problems.length ? `<div class="muted">${esc(u.problems.join(' '))}</div>` : ''}</td><td>${ago(u.created_at)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Nothing sent yet.</td></tr>'}</table></div>`;
+  const month = () => $('#mu [name=month]').value;
+  $('#mu').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const file = ev.target.file.files[0];
+    if (!file) { toast('Choose the payroll register, or use simulate.'); return; }
+    const r = await act(async () => portalApi(`/clients/${co.id}/monthly-upload`, { method: 'POST', body: { month: month(), csv: await file.text(), fileName: file.name } }));
+    toast(r.status === 'Ready' ? 'Payroll sent. Thank you!' : 'We found problems in that file. See below.');
+    renderClientUpload();
+  });
+  $('#mu-sim').addEventListener('click', () => act(() => portalApi(`/clients/${co.id}/monthly-upload`, { method: 'POST', body: { month: month(), simulate: true } }), 'Payroll sent. Thank you!').then(renderClientUpload));
+}

@@ -22,12 +22,29 @@
   <div id="auth-screen" hidden></div>
   <div class="layout">
     <nav class="sidenav">
-      <div class="nav-group">Portal</div>
-      <a href="#/clients">Companies</a>
-      <a href="#/queue">Onboarding Queue</a>
-      <a href="#/csm">Proposal Requested</a>
-      <a href="#/census">Census Review</a>
-      <a href="#/activity">Activity Log</a>
+      <label class="as-picker">Viewing as <select id="as-select"></select></label>
+      <div class="cs-nav">
+        <a href="#/home">Dashboard</a>
+        <a href="#/roster">Employee Roster</a>
+        <a href="#/clients">Clients</a>
+        <a href="#/master-census">Master Census</a>
+        <a href="#/terminated-employees">Terminated Employees</a>
+        <a href="#/team-tasks">Team Tasks</a>
+        <a href="#/queue">Onboarding Queue</a>
+        <a href="#/csm">Proposal Requested Queue</a>
+        <a href="#/mock-payroll-run">Mock Payroll Diagnosis</a>
+        <a href="#/activity">Activity Log</a>
+        <a href="#/employee-status-roster">Employee Status Change</a>
+        <div class="nav-group">Settings</div>
+        <a href="#/census">Census Review</a>
+        <a href="#/monthly-review-block">Monthly Review Block</a>
+      </div>
+      <div class="client-nav">
+        <a href="#/c-home">Dashboard</a>
+        <a href="#/c-roster">Roster</a>
+        <a href="#/c-census">Employee Census</a>
+        <a href="#/c-upload">Upload Monthly Payroll</a>
+      </div>
       <div class="nav-group">Training</div>
       <a href="#/assignments">My Assignments</a>
       <a href="#/admin" class="trainer-only">Training Admin</a>

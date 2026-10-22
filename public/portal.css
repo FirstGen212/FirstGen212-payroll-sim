@@ -12,3 +12,19 @@
 .sidenav a.active { background: rgba(255, 255, 255, 0.1); color: #ffffff; border-left-color: #5eead4; }
 .sidenav .nav-group { color: #7fa9a3; }
 .client-side { border-left: 4px solid #f59e0b; }
+
+/* CS team vs client view */
+.as-picker { display: block; padding: 8px 12px 12px; font-size: 12px; }
+.as-picker select { width: 100%; margin-top: 4px; }
+body.as-client .cs-nav, body:not(.as-client) .client-nav { display: none; }
+.task-card { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line, #e5e7eb); }
+.tabs { display: flex; gap: 4px; margin: 8px 0 12px; border-bottom: 1px solid var(--line, #e5e7eb); }
+.tabs a { padding: 8px 14px; text-decoration: none; border-bottom: 2px solid transparent; }
+.tabs a.active { border-bottom-color: currentColor; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.chip { background: transparent; color: inherit; border: 1px solid var(--line, #d1d5db); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
+.chip.active { background: #0f766e; color: #fff; border-color: #0f766e; }
+.onboarding-step.done { opacity: .7; }
+.req-form { padding: 8px 0; }
+.as-picker { color: rgba(255, 255, 255, .75); text-transform: uppercase; letter-spacing: .05em; font-size: 11px; }
+.as-picker select { text-transform: none; letter-spacing: 0; font-size: 13px; }

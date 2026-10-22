@@ -214,3 +214,52 @@ CREATE TABLE IF NOT EXISTS census_uploads (
   client_answers JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- CS work queue (Airtable CS_TASKS): requests from clients and the system, decided by CS.
+CREATE TABLE IF NOT EXISTS cs_tasks (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
+  task_flow TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Open',
+  payload JSONB NOT NULL DEFAULT '{}',
+  notes TEXT,
+  triggered_by TEXT,
+  decision TEXT,
+  decided_by TEXT,
+  decided_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Every employee status change (Airtable UNENROLLED/TERMINATED): from -> to, with an effective date.
+CREATE TABLE IF NOT EXISTS employee_status_log (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  from_status TEXT,
+  to_status TEXT NOT NULL,
+  effective_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  reason TEXT,
+  products JSONB,
+  actor TEXT,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Monthly payroll registers live clients send (Monthly Review Block).
+CREATE TABLE IF NOT EXISTS monthly_uploads (
+  id SERIAL PRIMARY KEY,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  month TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Processing',
+  file_name TEXT,
+  rows JSONB NOT NULL DEFAULT '[]',
+  problems JSONB NOT NULL DEFAULT '[]',
+  uploaded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS status_change_effective_date DATE;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS pending_status_change TEXT;

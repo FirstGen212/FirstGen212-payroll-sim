@@ -10,6 +10,7 @@ import { registerFromCsv } from '../engine/registerFormat.js';
 import { createCompany, fakePeople } from './workspaces.js';
 import { fakeCompany } from './census.js';
 import { faker } from './fake.js';
+import { setEmployeeStatus } from './portalOps.js';
 
 export const ONBOARDING_STATUSES = ['Welcome', 'Payroll Docs', 'Underwriting', 'Awaiting Payroll Confirmation', 'Awaiting CSM Verification',
   'Proposal Ready', 'Eligibility Review', 'Engagement Letter', 'AOP Pending', 'Census', 'Completed'];
@@ -29,21 +30,21 @@ export async function log(db, ws, companyId, action, detail = {}, actor = 'CS', 
     [ws, companyId, employeeId, action, detail, actor]);
 }
 
-async function getCompany(db, ws, id) {
+export async function getCompany(db, ws, id) {
   const { rows: [c] } = await db.query('SELECT * FROM companies WHERE id = $1 AND workspace_id = $2', [id, ws]);
   if (!c) throw Object.assign(new Error('Client not found'), { status: 404 });
   return c;
 }
 
-const employeesOf = async (db, companyId) =>
+export const employeesOf = async (db, companyId) =>
   (await db.query("SELECT * FROM employees WHERE company_id = $1 ORDER BY employee_number", [companyId])).rows;
 
-function grossPerPeriod(e, freq) {
+export function grossPerPeriod(e, freq) {
   const periods = PAY_PERIODS[freq];
   return e.pay_type === 'salary' ? Number(e.pay_rate) / periods : Number(e.pay_rate) * Number(e.standard_hours) * (52 / periods);
 }
 
-function calcInput(e, freq) {
+export function calcInput(e, freq) {
   return {
     name: `${e.first_name} ${e.last_name}`, employeeId: e.employee_number, workState: e.work_state, payFrequency: freq,
     grossPerPeriod: Math.round(grossPerPeriod(e, freq) * 100) / 100,
@@ -202,6 +203,10 @@ export async function uploadPayrollDocs(ws, id, { csv, fileName = 'Payroll Regis
     const source = simulate ? (await employeesOf(db, c.id)).map((e) => registerLine(e, c.pay_frequency)) : registerFromCsv(csv);
     if (source.length < 3) throw new PortalError('The register needs at least 3 employees.');
     if (!DOC_STATUSES.includes(c.onboarding_status)) throw new PortalError(`${c.name} is past the payroll documents stage.`);
+    // The portal asks for payroll documents only after the Terms of Service and the engagement letter.
+    if (!c.milestones?.tos_accepted || !c.milestones?.engagement_letter_signed) {
+      throw new PortalError('The client has to accept the Terms of Service and sign the engagement letter before submitting payroll documents.');
+    }
     // A new upload replaces any extraction still waiting for review.
     await db.query("DELETE FROM payroll_jobs WHERE company_id = $1 AND queue = 'review'", [c.id]);
     const { rows: [job] } = await db.query('INSERT INTO payroll_jobs (workspace_id, company_id, source, rows) VALUES ($1, $2, $3, $4) RETURNING id',
@@ -440,8 +445,12 @@ export async function setEmployeeProducts(ws, id, employeeNumber, { keep = [], r
     const products = remove ? {} : Object.fromEntries(Object.entries(e.products || {}).filter(([code]) => keep.includes(code)));
     if (!remove && !Object.keys(products).length) throw new PortalError('Keep at least one product, or remove the person from the program.');
     // Taken out of the program, not out of the company: Ineligible, so no end date is needed.
-    await db.query('UPDATE employees SET products = $2, census_status = $3, eligibility = $4 WHERE id = $1',
-      [e.id, products, remove ? 'Ineligible' : e.census_status, remove ? 'Removed after mock payroll' : e.eligibility]);
+    if (remove) {
+      await db.query("UPDATE employees SET eligibility = 'Removed after mock payroll' WHERE id = $1", [e.id]);
+      await setEmployeeStatus(db, ws, e, 'Ineligible', { reason: 'Removed after mock payroll', products: {} });
+    } else {
+      await db.query('UPDATE employees SET products = $2 WHERE id = $1', [e.id, products]);
+    }
     await log(db, ws, c.id, remove ? 'Removed after mock' : 'Products adjusted after mock', { employeeNumber, products }, 'CS', e.id);
     return { products };
   });
@@ -542,7 +551,8 @@ export async function reconciliation(ws, id) {
   const byId = new Map(payroll.map((p) => [p.emp_id, p]));
   const censusById = new Map(census.map((e) => [e.employee_number, e]));
   const newHires = payroll.filter((p) => !censusById.has(p.emp_id));
-  const missing = census.filter((e) => !byId.has(e.employee_number) && e.census_status !== 'Ineligible');
+  // New hires waiting on CS aren't in a payroll yet, so they aren't missing from it.
+  const missing = census.filter((e) => !byId.has(e.employee_number) && !['Ineligible', 'New hire'].includes(e.census_status));
   const payChanges = census.filter((e) => byId.has(e.employee_number)).map((e) => {
     const p = byId.get(e.employee_number);
     const annualCensus = Math.round(grossPerPeriod(e, c.pay_frequency) * PAY_PERIODS[c.pay_frequency]);
@@ -580,8 +590,9 @@ export async function reconAction(ws, id, { action, employeeNumber, date }) {
     const recon = await reconciliation(ws, id);
     if (!recon.opened) throw new PortalError('Open a payroll month first.');
     if (action === 'terminate') {
-      await db.query("UPDATE employees SET census_status = 'Terminated', termination_date = $3 WHERE company_id = $1 AND employee_number = $2",
-        [c.id, employeeNumber, date || new Date().toISOString().slice(0, 10)]);
+      const { rows: [e] } = await db.query('SELECT * FROM employees WHERE company_id = $1 AND employee_number = $2', [c.id, employeeNumber]);
+      if (!e) throw new PortalError('Employee not found');
+      await setEmployeeStatus(db, ws, e, 'Terminated', { effective: date || new Date().toISOString().slice(0, 10), reason: 'Not in this month\'s payroll', products: {} });
       await log(db, ws, c.id, 'Terminate request', { employeeNumber });
     } else if (action === 'update_pay') {
       const p = recon.payroll.find((x) => x.emp_id === employeeNumber);

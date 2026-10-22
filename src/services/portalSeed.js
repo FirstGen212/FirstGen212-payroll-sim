@@ -7,6 +7,7 @@ import { faker } from './fake.js';
 import { calcPaycheck } from '../engine/payroll.js';
 import { PAY_PERIODS } from '../engine/taxTables2026.js';
 import { calculatorRow } from '../engine/calculator.js';
+import { createTask } from './portalOps.js';
 
 const pick = (items) => faker.helpers.arrayElement(items);
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -92,7 +93,7 @@ export async function seedPortal(client, ws) {
   await client.query(
     `UPDATE companies SET onboarding_status = 'Completed', portal_status = 'Active', reflect_group = $2, company_code = 'NY',
        go_live_date = $3, pipedrive_deal_id = $4, contract_products = $5, products = $5,
-       contact = $6, milestones = '{"proposal_sent": true, "er_presented": true, "aop_sent": true, "aop_signed": true, "census_reconciled": true, "priced": true, "emails_sent": true, "education_done": true, "audit_passed": true}'
+       contact = $6, milestones = '{"tos_accepted": true, "engagement_letter_signed": true, "proposal_sent": true, "er_presented": true, "aop_sent": true, "aop_signed": true, "census_reconciled": true, "priced": true, "emails_sent": true, "education_done": true, "audit_passed": true}'
      WHERE id = $1`,
     [ny.id, `1G${faker.string.numeric(3)}`, goLive, faker.string.numeric(5), JSON.stringify(nyProducts),
       { name: faker.person.fullName(), title: 'HR Manager', email: 'hr@example.com', phone: faker.phone.number({ style: 'national' }) }]);
@@ -106,11 +107,13 @@ export async function seedPortal(client, ws) {
       [e.id, goLive, products, row.label, row.eligible ? (e.employment_type === 'PT' ? 'Active PT' : 'Active FT') : 'Ineligible']);
   }
 
+  await seedNyRequests(client, ws, ny, goLive);
+
   // NJ: AOP signed, census uploaded and waiting for review. The roster has gaps.
   const nj = byState.NJ;
   await client.query(
     `UPDATE companies SET onboarding_status = 'Census', portal_status = 'Onboarding', company_code = 'NJ', pipedrive_deal_id = $2,
-       contract_products = $3, contact = $4, milestones = '{"proposal_sent": true, "er_presented": true, "aop_sent": true, "aop_signed": true}'
+       contract_products = $3, contact = $4, milestones = '{"tos_accepted": true, "engagement_letter_signed": true, "proposal_sent": true, "er_presented": true, "aop_sent": true, "aop_signed": true}'
      WHERE id = $1`,
     [nj.id, faker.string.numeric(5), JSON.stringify([{ code: 'VIRTUAL', price: 149 }, { code: 'MEC', price: 65 }, { code: 'DENTAL', price: 30 }]),
       { name: faker.person.fullName(), title: 'Owner', email: 'owner@example.com', phone: faker.phone.number({ style: 'national' }) }]);
@@ -151,7 +154,7 @@ export async function seedPortal(client, ws) {
   const ca = byState.CA;
   await client.query(
     `UPDATE companies SET onboarding_status = 'Payroll Docs', portal_status = 'Onboarding', company_code = 'CA', pipedrive_deal_id = $2,
-       contact = $3, milestones = '{}' WHERE id = $1`,
+       contact = $3, milestones = '{"tos_accepted": true, "engagement_letter_signed": true}' WHERE id = $1`,
     [ca.id, faker.string.numeric(5), { name: faker.person.fullName(), title: 'Controller', email: 'payroll@example.com', phone: faker.phone.number({ style: 'national' }) }]);
   const source = (await employeesOf(ca)).map((e) => registerLine(e, ca.pay_frequency));
   const rows = simulateExtraction(source);
@@ -160,4 +163,31 @@ export async function seedPortal(client, ws) {
   await client.query(
     "INSERT INTO activity_log (workspace_id, company_id, action, detail, actor) VALUES ($1, $2, 'document.upload', $3, 'Client')",
     [ws, ca.id, { file: 'Payroll Register.pdf' }]);
+}
+
+/** Requests the live NY client has sent this week, waiting in CS's task list. */
+async function seedNyRequests(client, ws, ny, goLive) {
+  const employees = (await client.query("SELECT * FROM employees WHERE company_id = $1 AND census_status ~ '^Active' ORDER BY employee_number", [ny.id])).rows;
+  const [rerun, leaver, dropper] = faker.helpers.arrayElements(employees, 3);
+  // A new hire the client added from their roster.
+  const first = faker.person.firstName();
+  const last = faker.person.lastName();
+  const { rows: [{ next }] } = await client.query("SELECT MAX(employee_number::int) + 1 AS next FROM employees WHERE company_id = $1", [ny.id]);
+  const { rows: [hire] } = await client.query(
+    `INSERT INTO employees (workspace_id, company_id, employee_number, first_name, last_name, email, phone, ssn, birth_date, hire_date, address,
+       employment_type, pay_type, pay_rate, standard_hours, work_state, w4, state_w4, gender, job_title, location_code, company_code, census_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE - 3, $10, 'FT', 'hourly', $11, 40, 'NY', $12, $13, $14, 'Home Health Aide', '1000', 'NY', 'New hire') RETURNING id`,
+    [ws, ny.id, String(next), first, last, `${first}.${last}@example.com`.toLowerCase(), faker.phone.number({ style: 'national' }),
+      `${faker.number.int({ min: 100, max: 665 })}-${faker.string.numeric(2)}-${faker.string.numeric(4)}`, '1994-05-17',
+      { line1: faker.location.streetAddress(), city: 'Brooklyn', state: 'NY', zip: '11201' }, 24.5, { filingStatus: 'single' }, { filingStatus: 'single', allowances: 0 },
+      pick(['M', 'F'])]);
+  await client.query("INSERT INTO employee_status_log (workspace_id, company_id, employee_id, to_status, reason, actor) VALUES ($1, $2, $3, 'New hire', 'Added by client', 'Client')", [ws, ny.id, hire.id]);
+  await createTask(client, ws, { companyId: ny.id, employeeId: hire.id, flow: 'New Hire', payload: { startDate: 'this week' } });
+  // A rerun: the client says this person now earns less and works fewer hours.
+  const grossNow = rerun.pay_type === 'salary' ? Number(rerun.pay_rate) : Math.round(Number(rerun.pay_rate) * Number(rerun.standard_hours) * 52);
+  await createTask(client, ws, { companyId: ny.id, employeeId: rerun.id, flow: 'Eligibility Rerun Request',
+    payload: { reason: 'Hours cut', newValues: { gross_annual: Math.round(grossNow * 0.7), avg_hours_per_week: 28, filing_status: rerun.w4.filingStatus } } });
+  await createTask(client, ws, { companyId: ny.id, employeeId: leaver.id, flow: 'Terminate', payload: { effectiveDate: goLive, reason: 'Resigned' } });
+  await client.query("UPDATE employees SET pending_status_change = 'Terminated' WHERE id = $1", [leaver.id]);
+  await createTask(client, ws, { companyId: ny.id, employeeId: dropper.id, flow: 'Product Change', payload: { drop: ['MEC'], reason: 'Covered by spouse' } });
 }

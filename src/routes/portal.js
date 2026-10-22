@@ -1,6 +1,7 @@
 // Employer portal API, mounted inside a workspace: /api/w/:ws/portal/...
 import express from 'express';
 import * as portal from '../services/portal.js';
+import * as ops from '../services/portalOps.js';
 
 export const portalRoutes = express.Router({ mergeParams: true });
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).then((out) => {
@@ -45,3 +46,21 @@ portalRoutes.post('/census-uploads/:id/ask', wrap((req) => portal.askClient(req.
 portalRoutes.post('/census-uploads/:id/send', wrap((req) => portal.sendCensus(req.ws, Number(req.params.id))));
 
 portalRoutes.get('/activity', wrap((req) => portal.activity(req.ws, { companyId: Number(req.query.company) || null })));
+
+// Day-to-day operations (CS tasks, status changes, client requests, monthly uploads)
+const num = (v) => (v ? Number(v) : undefined);
+portalRoutes.get('/dashboard', wrap((req) => ops.dashboard(req.ws)));
+portalRoutes.get('/master-census', wrap((req) => ops.masterCensus(req.ws)));
+portalRoutes.get('/tasks', wrap((req) => ops.listTasks(req.ws, { status: req.query.status, flow: req.query.flow, companyId: num(req.query.company) })));
+portalRoutes.get('/tasks/:id', wrap((req) => ops.taskDetail(req.ws, Number(req.params.id))));
+portalRoutes.post('/tasks/:id/decide', wrap((req) => ops.decideTask(req.ws, Number(req.params.id), req.body, req.user.name)));
+portalRoutes.get('/status-roster', wrap((req) => ops.statusRoster(req.ws, { asOf: req.query.asOf, companyId: num(req.query.company) })));
+portalRoutes.get('/status-changes', wrap((req) => ops.statusChanges(req.ws, { companyId: num(req.query.company) })));
+portalRoutes.get('/monthly-uploads', wrap((req) => ops.listMonthlyUploads(req.ws, { status: req.query.status, companyId: num(req.query.company) })));
+portalRoutes.post('/monthly-uploads/:id/reviewed', wrap((req) => ops.markUploadReviewed(req.ws, Number(req.params.id))));
+portalRoutes.post('/clients/:id/monthly-upload', wrap((req) => ops.monthlyUpload(req.ws, Number(req.params.id), req.body, req.body.actor === 'CS' ? req.user.name : 'Client')));
+portalRoutes.get('/clients/:id/deductions', wrap((req) => ops.deductions(req.ws, Number(req.params.id))));
+portalRoutes.post('/clients/:id/requests', wrap((req) => ops.clientRequest(req.ws, Number(req.params.id), req.body)));
+portalRoutes.post('/clients/:id/new-hire', wrap((req) => ops.addNewHire(req.ws, Number(req.params.id), req.body)));
+portalRoutes.post('/clients/:id/tos', wrap((req) => ops.acceptTos(req.ws, Number(req.params.id))));
+portalRoutes.post('/clients/:id/engagement-letter', wrap((req) => ops.signEngagementLetter(req.ws, Number(req.params.id), req.body)));
